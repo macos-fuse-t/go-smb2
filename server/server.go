@@ -495,9 +495,8 @@ func (n *ServerNegotiator) negotiate(conn *conn, pkt []byte) error {
 
 	n.SpecifiedDialect = uint16(SMB2)
 	for _, d := range r.Dialects() {
-		if d == SMB311 {
+		if d > n.SpecifiedDialect && d <= SMB311 {
 			n.SpecifiedDialect = d
-			break
 		}
 	}
 
