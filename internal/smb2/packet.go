@@ -92,6 +92,9 @@ func (p PacketCodec) IsInvalid() bool {
 	if p.NextCommand()&7 != 0 {
 		return true
 	}
+	if int(p.NextCommand()) >= len(p) {
+		return true
+	}
 
 	return false
 }

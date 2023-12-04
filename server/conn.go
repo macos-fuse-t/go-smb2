@@ -251,6 +251,11 @@ func (conn *conn) runReciever() {
 
 		for {
 			p := PacketCodec(pkt)
+			if p.IsInvalid() {
+				err = &InvalidRequestError{}
+				goto exit
+			}
+
 			if p.IsCompoundFirst() {
 				compCtx = &compoundContext{
 					treeId:    uint64(p.TreeId()),
