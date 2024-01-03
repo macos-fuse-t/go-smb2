@@ -99,7 +99,7 @@ func Advertise(listenAddr string, hostname string, svcName string, shareName str
 		}
 	}
 
-	s, err := zeroconf.RegisterProxy(hostname, "_smb._tcp", ".local", port, svcName, ips, nil, ifaces)
+	s, err := zeroconf.RegisterProxy(hostname, "_smb._tcp", ".local", port, svcName, ips, []string{""}, ifaces)
 	if err != nil {
 		log.Fatalln(err.Error())
 	}
