@@ -162,7 +162,7 @@ func (p PacketCodec) SetStatus(u uint32) {
 
 func (p PacketCodec) Command() uint16 {
 	if p.IsSmb1() {
-		return uint16(p[5])
+		return uint16(p[4])
 	}
 	return le.Uint16(p[12:14])
 }
