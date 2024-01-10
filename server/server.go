@@ -25,6 +25,8 @@ import (
 	"golang.org/x/exp/maps"
 )
 
+const DEFAULT_IOPS = 32
+
 type Server struct {
 	maxCreditBalance uint16 // if it's zero, clientMaxCreditBalance is used. (See feature.go for more details)
 	negotiator       ServerNegotiator
@@ -427,6 +429,13 @@ func (c *conn) treeConnect(pkt []byte) error {
 			rsp.TreeId = t.getTree().treeId
 			tc = t.getTree()
 		} else {
+			maxIOWrites, maxIoReads := DEFAULT_IOPS, DEFAULT_IOPS
+			if c.serverCtx.maxIOReads > 0 {
+				maxIoReads = c.serverCtx.maxIOReads
+			}
+			if c.serverCtx.maxIOWrites > 0 {
+				maxIOWrites = c.serverCtx.maxIOWrites
+			}
 			ft := &fileTree{
 				treeConn: treeConn{
 					session:    c.session,
@@ -436,8 +445,8 @@ func (c *conn) treeConnect(pkt []byte) error {
 				},
 				fs:         fs,
 				openFiles:  make(map[uint64]bool),
-				ioReadSem:  make(chan struct{}, c.serverCtx.maxIOReads),
-				ioWriteSem: make(chan struct{}, c.serverCtx.maxIOWrites),
+				ioReadSem:  make(chan struct{}, maxIoReads),
+				ioWriteSem: make(chan struct{}, maxIOWrites),
 			}
 
 			tc = &ft.treeConn
