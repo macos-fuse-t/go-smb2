@@ -142,12 +142,18 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		}
 		action = FILE_OVERWRITTEN
 		flags = os.O_CREATE | os.O_TRUNC
-	case FILE_SUPERSEDE, FILE_OVERWRITE_IF:
+	case FILE_OVERWRITE_IF:
+		action = FILE_CREATED
+		if fileExists {
+			action = FILE_OVERWRITTEN
+		}
+		flags = os.O_CREATE | os.O_TRUNC
+	case FILE_SUPERSEDE:
 		action = FILE_CREATED
 		if fileExists {
 			action = FILE_SUPERSEDED
 		}
-		flags = os.O_CREATE | os.O_TRUNC
+		flags = os.O_CREATE
 	}
 
 	if err != nil {
@@ -1763,6 +1769,7 @@ func (t *fileTree) setInfo(ctx *compoundContext, pkt []byte) error {
 		return t.setSecInfo(ctx, fileId, pkt)
 	}
 
+	status := uint32(0)
 	switch r.FileInfoClass() {
 	case FileBasicInformation:
 		if !open.isEa {
@@ -1781,16 +1788,18 @@ func (t *fileTree) setInfo(ctx *compoundContext, pkt []byte) error {
 		if !open.isEa {
 			return t.setRename(ctx, fileId, pkt)
 		}
+		status = uint32(STATUS_NOT_SUPPORTED)
 	case FileAllocationInformation:
 		rsp := &SetInfoResponse{}
 		PrepareResponse(&rsp.PacketHeader, pkt, 0)
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	default:
+		status = uint32(STATUS_NOT_SUPPORTED)
 		log.Errorf("unsupported class %d in SetInfo", r.FileInfoClass())
 	}
 
 	rsp := new(ErrorResponse)
-	PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+	PrepareResponse(&rsp.PacketHeader, pkt, status)
 
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
