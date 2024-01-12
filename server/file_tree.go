@@ -556,6 +556,7 @@ func (t *fileTree) readEA(ctx *compoundContext, fileId *FileId, open *Open, buf 
 				Version:   [4]byte{0x00, 0x01, 0x00, 0x00},
 			}
 			info.Encode(buf)
+			n = 60
 			//t.fs.Setxattr(h, open.eaKey, buf)
 		} else {
 			rsp := new(ErrorResponse)
