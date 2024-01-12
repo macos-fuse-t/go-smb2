@@ -1608,7 +1608,7 @@ func (t *fileTree) setBasicInfo(ctx *compoundContext, fileId *FileId, pkt []byte
 		a.SetBirthTime(time.Unix(seconds, nanoseconds))
 	}
 
-	if _, err := t.fs.SetAttr(vfs.VfsHandle(fileId.HandleId()), a); err != nil {
+	if _, err := t.fs.SetAttr(vfs.VfsHandle(fileId.HandleId()), a); err != nil && !c.serverCtx.ignoreSetAttrErr {
 		log.Errorf("SetAttr failed: %v", err)
 		rsp := new(ErrorResponse)
 		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))

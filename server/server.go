@@ -51,6 +51,8 @@ type Server struct {
 
 	xattrs bool
 
+	ignoreSetAttrErr bool
+
 	activeConns map[*conn]struct{}
 
 	lock sync.Mutex
@@ -132,10 +134,11 @@ var (
 )
 
 type ServerConfig struct {
-	AllowGuest  bool
-	MaxIOReads  int
-	MaxIOWrites int
-	Xatrrs      bool
+	AllowGuest       bool
+	MaxIOReads       int
+	MaxIOWrites      int
+	Xatrrs           bool
+	IgnoreSetAttrErr bool
 }
 
 func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFileSystem) *Server {
@@ -145,15 +148,16 @@ func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFile
 	}
 
 	srv := &Server{
-		authenticator: a,
-		shares:        newShares,
-		origShares:    shares,
-		opens:         map[uint64]*Open{},
-		allowGuest:    cfg.AllowGuest,
-		maxIOReads:    cfg.MaxIOReads,
-		maxIOWrites:   cfg.MaxIOWrites,
-		xattrs:        cfg.Xatrrs,
-		activeConns:   map[*conn]struct{}{},
+		authenticator:    a,
+		shares:           newShares,
+		origShares:       shares,
+		opens:            map[uint64]*Open{},
+		allowGuest:       cfg.AllowGuest,
+		maxIOReads:       cfg.MaxIOReads,
+		maxIOWrites:      cfg.MaxIOWrites,
+		xattrs:           cfg.Xatrrs,
+		ignoreSetAttrErr: cfg.IgnoreSetAttrErr,
+		activeConns:      map[*conn]struct{}{},
 	}
 	return srv
 }
