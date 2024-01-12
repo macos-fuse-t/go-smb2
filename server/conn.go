@@ -112,11 +112,19 @@ type conn struct {
 	_useSession int32 // receiver use session?
 
 	ctx         context.Context
+	cancel      context.CancelFunc
 	serverCtx   *Server
 	serverState ConnState
 
 	treeMapByName map[string]treeOps
 	treeMapById   map[uint32]treeOps
+}
+
+func (conn *conn) shutdown() {
+	conn.cancel()
+	conn.wdone <- struct{}{}
+	conn.rdone <- struct{}{}
+	conn.t.Close()
 }
 
 func (conn *conn) useSession() bool {

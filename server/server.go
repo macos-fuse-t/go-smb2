@@ -35,6 +35,9 @@ type Server struct {
 	serverStartTime time.Time
 	serverGuid      Guid
 
+	listener net.Listener
+	active   bool
+
 	shares     map[string]vfs.VFSFileSystem
 	origShares map[string]vfs.VFSFileSystem
 
@@ -47,6 +50,8 @@ type Server struct {
 	maxIOWrites int
 
 	xattrs bool
+
+	activeConns map[*conn]struct{}
 
 	lock sync.Mutex
 }
@@ -148,6 +153,7 @@ func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFile
 		maxIOReads:    cfg.MaxIOReads,
 		maxIOWrites:   cfg.MaxIOWrites,
 		xattrs:        cfg.Xatrrs,
+		activeConns:   map[*conn]struct{}{},
 	}
 	return srv
 }
@@ -168,16 +174,18 @@ func (d *Server) Serve(addr string) error {
 		fmt.Fprintf(os.Stderr, "Error setting up listener: %v\n", err)
 		os.Exit(1)
 	}
+	d.listener = listener
 	defer listener.Close()
+	d.active = true
 
-	for {
+	for d.active {
 		// Accept a new connection.
 		c, err := listener.Accept()
 		if err != nil {
 			continue
 		}
 
-		ctx := context.Background()
+		ctx, cancel := context.WithCancel(context.Background())
 
 		maxCreditBalance := d.maxCreditBalance
 		if maxCreditBalance == 0 {
@@ -194,6 +202,7 @@ func (d *Server) Serve(addr string) error {
 			write:               make(chan []byte, 10),
 			werr:                make(chan error, 1),
 			ctx:                 ctx,
+			cancel:              cancel,
 			serverCtx:           d,
 			serverState:         STATE_NEGOTIATE,
 			cipherId:            AES128GCM,
@@ -202,17 +211,26 @@ func (d *Server) Serve(addr string) error {
 			treeMapById:         make(map[uint32]treeOps),
 		}
 
+		d.activeConns[conn] = struct{}{}
 		go conn.runReciever()
 		go conn.runSender()
 		// Handle the connection in a new goroutine.
 		go func() {
-
 			if err = conn.Run(); err != nil {
 				// Run failed
 				log.Errorf("err: %v", err)
 				c.Close()
 			}
 		}()
+	}
+	return nil
+}
+
+func (d *Server) Shutdown() {
+	d.active = false
+	d.listener.Close()
+	for c := range d.activeConns {
+		c.shutdown()
 	}
 }
 
@@ -380,7 +398,9 @@ func (c *conn) treeConnect(pkt []byte) error {
 	if strings.HasSuffix(r.Path(), "\\IPC$") {
 		rsp.ShareType = SMB2_SHARE_TYPE_PIPE
 		rsp.MaximalAccess = SYNCHRONIZE | WRITE_OWNER | WRITE_DAC | READ_CONTROL | DELETE |
-			FILE_READ_ATTRIBUTES | FILE_EXECUTE | FILE_READ_EA | FILE_READ_DATA
+			FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES |
+			FILE_EXECUTE | FILE_READ_EA | FILE_WRITE_EA |
+			FILE_READ_DATA | FILE_WRITE_DATA | FILE_DELETE_CHILD
 
 		var tc *treeConn
 		if t, ok := c.treeMapByName["\\IPC$"]; ok {
