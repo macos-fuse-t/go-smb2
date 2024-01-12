@@ -719,7 +719,8 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 
 	if open.isEa {
 		log.Debugf("write ea: key %s, val %s", open.eaKey, r.Data())
-		err = t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data())
+		// ignore xattr errors
+		t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data())
 		n = len(r.Data())
 	} else {
 		log.Debugf("Write: %d offset %d", r.Length(), r.Offset())
