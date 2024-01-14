@@ -114,7 +114,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		}
 	case FILE_OPEN:
 		if !fileExists {
-			log.Errorf("Open: doesn't exists: %s", r.Name())
+			log.Debugf("Open: doesn't exists: %s", r.Name())
 			rsp := new(ErrorResponse)
 			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NO_SUCH_FILE))
 			return c.sendPacket(rsp, &t.treeConn, ctx)
