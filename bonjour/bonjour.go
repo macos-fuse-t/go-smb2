@@ -81,7 +81,7 @@ func getNonLoopbackIPAddresses() ([]string, error) {
 }
 
 // https://developer.apple.com/library/archive/releasenotes/NetworkingInternetWeb/Time_Machine_SMB_Spec/index.html#//apple_ref/doc/uid/TP40017496
-func Advertise(listenAddr string, hostname string, svcName string, shareName string) {
+func Advertise(listenAddr string, hostname string, svcName string, shareName string, tm bool) {
 	host, portStr, _ := net.SplitHostPort(listenAddr)
 	port, _ := strconv.Atoi(portStr)
 
@@ -111,11 +111,13 @@ func Advertise(listenAddr string, hostname string, svcName string, shareName str
 	}
 	bonjourServers = append(bonjourServers, s)
 
-	s, err = zeroconf.RegisterProxy(hostname, "_device-info._tcp", ".local", 9, svcName, ips, []string{"model=TimeCapsule8,119"}, ifaces)
-	if err != nil {
-		log.Fatalln(err.Error())
+	if tm {
+		s, err = zeroconf.RegisterProxy(hostname, "_device-info._tcp", ".local", 9, svcName, ips, []string{"model=TimeCapsule8,119"}, ifaces)
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+		bonjourServers = append(bonjourServers, s)
 	}
-	bonjourServers = append(bonjourServers, s)
 }
 
 func Shutdown() {

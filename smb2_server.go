@@ -46,7 +46,7 @@ func main() {
 	log.Infof("Starting server at %s", cfg.ListenAddr)
 	go srv.Serve(cfg.ListenAddr)
 	if cfg.Advertise {
-		go bonjour.Advertise(cfg.ListenAddr, cfg.Hostname, cfg.Hostname, cfg.ShareName)
+		go bonjour.Advertise(cfg.ListenAddr, cfg.Hostname, cfg.Hostname, cfg.ShareName, true)
 	}
 
 	//go stats.StatServer(":9092")
