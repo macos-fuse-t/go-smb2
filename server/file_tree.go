@@ -481,28 +481,35 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 
 	rsp.Status = status
 
-	if r.Flags()&SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB != 0 {
-		a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
-		if err != nil {
-			log.Errorf("Close: GetAttr() failed")
-			goto send
-		}
+	/*if r.Flags()&SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB != 0 {
+			log.Debugf("Close with post attrs")
+			a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
+			if err != nil {
+				log.Errorf("Close: GetAttr() failed")
+				goto send
+			}
 
-		open := t.conn.serverCtx.getOpen(fileId.HandleId())
-		if open == nil {
-			log.Errorf("close: no open")
-			goto send
+			open := t.conn.serverCtx.getOpen(fileId.HandleId())
+			if open == nil {
+				log.Errorf("close: no open")
+				goto send
+			}
+			rsp.CloseFlags = SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB
+			rsp.CreationTime = BirthTimeFromVfs(a)
+			rsp.LastAccessTime = AccessTimeFromVfs(a)
+			rsp.LastWriteTime = ModifiedTimeFromVfs(a)
+			rsp.ChangeTime = ChangeTimeFromVfs(a)
+			rsp.EndofFile = int64(SizeFromVfs(a))
+			rsp.AllocationSize = int64(DiskSizeFromVfs(a))
+			rsp.FileAttributes = PermissionsFromVfs(a, open.pathName)
+
+			if open.isEa {
+				len, _ := t.fs.Getxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, nil)
+				rsp.EndofFile = int64(len)
+				rsp.AllocationSize = int64(len)
+			}
 		}
-		rsp.CloseFlags = SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB
-		rsp.CreationTime = BirthTimeFromVfs(a)
-		rsp.LastAccessTime = AccessTimeFromVfs(a)
-		rsp.LastWriteTime = ModifiedTimeFromVfs(a)
-		rsp.ChangeTime = ChangeTimeFromVfs(a)
-		rsp.EndofFile = int64(SizeFromVfs(a))
-		rsp.AllocationSize = int64(DiskSizeFromVfs(a))
-		rsp.FileAttributes = PermissionsFromVfs(a, open.pathName)
-	}
-send:
+	send:*/
 	t.conn.serverCtx.deleteOpen(fileId.HandleId())
 	t.fs.Close(vfs.VfsHandle(fileId.HandleId()))
 
@@ -689,9 +696,9 @@ func (t *fileTree) write(ctx *compoundContext, pkt []byte) error {
 
 	// async write
 	asyncId := randint64()
-	if ctx != nil || open.isEa {
-		return t.writeImpl(ctx, pkt, fileId, open, 0)
-	}
+	//if ctx != nil || open.isEa {
+	return t.writeImpl(ctx, pkt, fileId, open, 0)
+	//}
 
 	go func() {
 
