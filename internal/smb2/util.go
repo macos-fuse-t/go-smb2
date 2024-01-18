@@ -163,13 +163,13 @@ func MaxAccessFromVfs(a *vfs.Attributes) uint32 {
 
 	if unixMode&0404 != 0 {
 		maximalAccess |= FILE_READ_ATTRIBUTES | FILE_READ_DATA | FILE_READ_EA
-		if unixMode&04 != 0 {
+		if unixMode&0400 != 0 {
 			maximalAccess |= READ_CONTROL
 		}
 	}
 	if unixMode&0202 != 0 {
 		maximalAccess |= FILE_WRITE_ATTRIBUTES | FILE_WRITE_DATA | FILE_WRITE_EA | FILE_APPEND_DATA
-		if unixMode&02 != 0 {
+		if unixMode&0200 != 0 {
 			maximalAccess |= WRITE_DAC | WRITE_OWNER
 			maximalAccess |= DELETE | FILE_DELETE_CHILD
 		}
