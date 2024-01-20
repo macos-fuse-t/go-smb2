@@ -783,6 +783,9 @@ func (c *conn) sessionServerSetupChallenge(pkt []byte) error {
 
 	outputToken, user, err := c.serverCtx.negotiator.Spnego.authenticate(r.SecurityBuffer())
 	if err != nil {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		c.sendPacket(rsp, nil, nil)
 		return &InvalidRequestError{err.Error()}
 	}
 
