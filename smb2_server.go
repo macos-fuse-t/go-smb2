@@ -8,10 +8,6 @@ import (
 	"github.com/macos-fuse-t/go-smb2/vfs"
 )
 
-const (
-	ShareName = "Share"
-)
-
 func main() {
 
 	homeDir, _ := os.UserHomeDir()
@@ -21,8 +17,8 @@ func main() {
 	})
 
 	userPwd := map[string]string{"a": "a"}
-	shared := map[string]vfs.VFSFileSystem{ShareName: example.NewPassthroughFS(cfg.MountDir)}
+	shared := map[string]vfs.VFSFileSystem{cfg.ShareName: example.NewPassthroughFS(cfg.MountDir)}
 	ds := example.NewDS(userPwd, shared)
-	example.Run(cfg, ds, ShareName)
+	example.Run(cfg, ds, cfg.ShareName)
 
 }
