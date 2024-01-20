@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/macos-fuse-t/go-smb2/config"
 	"github.com/macos-fuse-t/go-smb2/internal/crypto/ccm"
 	"github.com/macos-fuse-t/go-smb2/internal/crypto/cmac"
 	. "github.com/macos-fuse-t/go-smb2/internal/erref"
@@ -38,9 +39,6 @@ type Server struct {
 	listener net.Listener
 	active   bool
 
-	shares     map[string]vfs.VFSFileSystem
-	origShares map[string]vfs.VFSFileSystem
-
 	opens       map[uint64]*Open
 	opensByGuid map[Guid]*Open
 
@@ -56,6 +54,8 @@ type Server struct {
 	activeConns map[*conn]struct{}
 
 	lock sync.Mutex
+
+	ds config.DSI
 }
 
 type OpLockState uint8
@@ -141,16 +141,10 @@ type ServerConfig struct {
 	IgnoreSetAttrErr bool
 }
 
-func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFileSystem) *Server {
-	newShares := map[string]vfs.VFSFileSystem{}
-	for i, v := range shares {
-		newShares[strings.ToUpper(i)] = v
-	}
+func NewServer(cfg *ServerConfig, a Authenticator, ds config.DSI) *Server {
 
 	srv := &Server{
 		authenticator:    a,
-		shares:           newShares,
-		origShares:       shares,
 		opens:            map[uint64]*Open{},
 		allowGuest:       cfg.AllowGuest,
 		maxIOReads:       cfg.MaxIOReads,
@@ -158,6 +152,7 @@ func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFile
 		xattrs:           cfg.Xatrrs,
 		ignoreSetAttrErr: cfg.IgnoreSetAttrErr,
 		activeConns:      map[*conn]struct{}{},
+		ds:               ds,
 	}
 	return srv
 }
@@ -198,6 +193,7 @@ func (d *Server) Serve(addr string) error {
 		a := openAccount(maxCreditBalance)
 
 		conn := &conn{
+			DS:                  d.ds,
 			t:                   direct(c),
 			outstandingRequests: newOutstandingRequests(),
 			account:             a,
@@ -411,7 +407,7 @@ func (c *conn) treeConnect(pkt []byte) error {
 			rsp.TreeId = t.getTree().treeId
 			tc = t.getTree()
 		} else {
-			shares := maps.Keys(c.serverCtx.origShares)
+			shares := maps.Keys(c.session.origShares)
 			ft := &ipcTree{
 				treeConn: treeConn{
 					session:    c.session,
@@ -436,10 +432,10 @@ func (c *conn) treeConnect(pkt []byte) error {
 		}
 		path := parts[len(parts)-1]
 
-		fs, ok := c.serverCtx.shares[strings.ToUpper(path)]
+		fs, ok := c.session.shares[strings.ToUpper(path)]
 		if !ok {
-			if fs, ok = c.serverCtx.shares[strings.ToUpper(path)+"$"]; !ok {
-				log.Debugf("shares: %v", maps.Keys(c.serverCtx.shares))
+			if fs, ok = c.session.shares[strings.ToUpper(path)+"$"]; !ok {
+				log.Debugf("shares: %v", maps.Keys(c.session.shares))
 				return &InvalidRequestError{"bad share: " + path}
 			}
 		}
@@ -791,9 +787,20 @@ func (c *conn) sessionServerSetupChallenge(pkt []byte) error {
 	}
 
 	log.Debugf("auth user: %s", user)
+
 	flags := uint16(0)
 	if c.serverCtx.allowGuest {
 		flags = SMB2_SESSION_FLAG_IS_GUEST
+	}
+
+	origShares, err := c.DS.UserShared(user)
+	if err != nil {
+		return &InvalidRequestError{err.Error()}
+	}
+
+	shares := map[string]vfs.VFSFileSystem{}
+	for i, v := range origShares {
+		shares[strings.ToUpper(i)] = v
 	}
 
 	sessionId := p.SessionId()
@@ -802,6 +809,8 @@ func (c *conn) sessionServerSetupChallenge(pkt []byte) error {
 		treeConnTables: make(map[uint32]*treeConn),
 		sessionFlags:   flags,
 		sessionId:      sessionId,
+		shares:         shares,
+		origShares:     origShares,
 	}
 
 	rsp := &SessionSetupResponse{

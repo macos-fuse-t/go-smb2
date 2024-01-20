@@ -7,6 +7,7 @@ import (
 	"math/rand"
 
 	. "github.com/macos-fuse-t/go-smb2/internal/smb2"
+	"github.com/macos-fuse-t/go-smb2/vfs"
 )
 
 var zero [16]byte
@@ -22,6 +23,9 @@ type session struct {
 	verifier  hash.Hash
 	encrypter cipher.AEAD
 	decrypter cipher.AEAD
+
+	shares     map[string]vfs.VFSFileSystem
+	origShares map[string]vfs.VFSFileSystem
 
 	// applicationKey []byte
 }
