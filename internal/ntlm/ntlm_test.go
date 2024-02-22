@@ -9,6 +9,7 @@ import (
 
 	"testing"
 
+	"github.com/macos-fuse-t/go-smb2/config"
 	"github.com/macos-fuse-t/go-smb2/internal/utf16le"
 )
 
@@ -211,15 +212,27 @@ func TestSeal(t *testing.T) {
 	}
 }
 
+type UserPwdF func(name string) (password string, err error)
+
+func (u UserPwdF) UserPwd(name string) (password string, err error) {
+	return u(name)
+}
+
 func TestClientServer(t *testing.T) {
 	c := &Client{
 		User:     "user",
 		Password: "password",
 	}
 
-	s := NewServer("server", "", "", "", "")
+	unf := func(name string) (password string, err error) {
+		if "user" == name {
+			return "password", nil
+		}
+		return "", config.ErrAccountNotFound
+	}
 
-	s.AddAccount("user", "password")
+	s := NewServer("server", "", "", "", "", UserPwdF(unf))
+	// s.AddAccount("user", "password")
 
 	nmsg, err := c.Negotiate()
 	if err != nil {
