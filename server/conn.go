@@ -482,8 +482,11 @@ func (conn *conn) tryHandle(pkt []byte, compCtx *compoundContext, e error) error
 }
 
 func (conn *conn) sendPacket(req Packet, tc *treeConn, compCtx *compoundContext) error {
+	conn.m.Lock()
+
 	pkt, err := conn.encodePacket(req, tc, conn.ctx)
 	if err != nil {
+		conn.m.Unlock()
 		return err
 	}
 
@@ -492,6 +495,7 @@ func (conn *conn) sendPacket(req Packet, tc *treeConn, compCtx *compoundContext)
 
 		compCtx.addResponse(pkt)
 		if req.Header().MessageId != compCtx.lastMsgId {
+			conn.m.Unlock()
 			return nil
 		}
 		pkt = make([]byte, compCtx.Size())
@@ -502,6 +506,7 @@ func (conn *conn) sendPacket(req Packet, tc *treeConn, compCtx *compoundContext)
 	case STATE_NEGOTIATE, STATE_SESSION_SETUP, STATE_SESSION_SETUP_CHALLENGE:
 		conn.calcPreauthHash(pkt)
 	}
+	conn.m.Unlock()
 
 	ctx := conn.ctx
 	select {
