@@ -792,7 +792,7 @@ func (c *conn) sessionServerSetupChallenge(pkt []byte) error {
 	log.Debugf("auth user: %s", user)
 
 	flags := uint16(0)
-	if c.serverCtx.allowGuest {
+	if user == config.KGuest {
 		flags = SMB2_SESSION_FLAG_IS_GUEST
 	}
 

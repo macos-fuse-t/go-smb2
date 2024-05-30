@@ -7,13 +7,14 @@ import (
 
 var _ config.DSI = (*ds)(nil)
 
-func NewDS(UserPassword map[string]string, UserShareds map[string]vfs.VFSFileSystem) config.DSI {
-	return &ds{UserPassword: UserPassword, UserShareds: UserShareds}
+func NewDS(UserPassword map[string]string, UserShareds, GuestShareds map[string]vfs.VFSFileSystem) config.DSI {
+	return &ds{UserPassword: UserPassword, UserShareds: UserShareds, GuestShareds: GuestShareds}
 }
 
 type ds struct {
 	UserPassword map[string]string
 	UserShareds  map[string]vfs.VFSFileSystem
+	GuestShareds map[string]vfs.VFSFileSystem
 }
 
 func (d *ds) UserPwd(name string) (password string, err error) {
@@ -24,5 +25,8 @@ func (d *ds) UserPwd(name string) (password string, err error) {
 	return
 }
 func (d *ds) UserShared(name string) (shared map[string]vfs.VFSFileSystem, err error) {
+	if name == config.KGuest {
+		return d.GuestShareds, nil
+	}
 	return d.UserShareds, nil
 }

@@ -229,10 +229,16 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 
 	if len(userName) != 0 || len(ntChallengeResponse) != 0 {
 		user := utf16le.DecodeToString(userName)
-		pwd, err := s.DS.UserPwd(user)
-		if err != nil && !s.allowGuest {
-			return errors.New("no such user " + user)
+
+		var pwd string
+		if user == config.KGuest && s.allowGuest {
+		} else {
+			pwd, err = s.DS.UserPwd(user)
+			if err != nil {
+				return errors.New("no such user " + user)
+			}
 		}
+
 		expectedNtChallengeResponse := make([]byte, len(ntChallengeResponse))
 		ntlmv2ClientChallenge := ntChallengeResponse[16:]
 		USER := utf16le.EncodeStringToBytes(strings.ToUpper(user))

@@ -855,7 +855,7 @@ func (t *fileTree) handleDeleteReparsePointReq(ctx *compoundContext, pkt []byte)
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId()))
+	err := t.fs.Remove(vfs.VfsHandle(fileId.HandleId()))
 	if err != nil {
 		log.Errorf("handleDeleteReparsePointReq: Readlink() failed: %v", err)
 		rsp := new(ErrorResponse)
@@ -1637,7 +1637,7 @@ func (t *fileTree) setEndOfFileInfo(ctx *compoundContext, fileId *FileId, pkt []
 func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, pkt []byte) error {
 	c := t.session.conn
 
-	if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
+	if err := t.fs.Remove(vfs.VfsHandle(fileId.HandleId())); err != nil {
 		log.Errorf("Delete failed: %v", err)
 		rsp := new(ErrorResponse)
 		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
