@@ -23,37 +23,35 @@ type VFSFileSystem interface {
 	StatFS(VfsHandle) (*FSAttributes, error)
 
 	FSync(VfsHandle) error
-
 	Flush(VfsHandle) error
 
 	//Mknod(VfsNode, string, int, int) (*EntryReply, error)
-
 	//Create(VfsNode, string, int, int) (*EntryReply, VfsHandle, error)
-	Open(string, int, int) (VfsHandle, error)
+
+	Open(string, int, int) (VfsHandle, error) //int: flag, int: os.FileMode
 	Close(VfsHandle) error
 
 	Lookup(VfsHandle, string) (*Attributes, error)
 
-	Mkdir(string, int) (*Attributes, error)
+	Mkdir(string, int) (*Attributes, error) //int: os.FileMode
 
-	Read(VfsHandle, []byte, uint64, int) (int, error)
-	Write(VfsHandle, []byte, uint64, int) (int, error)
+	Read(VfsHandle, []byte, uint64, int) (int, error)  //[]byte: buf, uint64: offset
+	Write(VfsHandle, []byte, uint64, int) (int, error) //[]byte: data, uint64: offset, int: flag
 
 	OpenDir(string) (VfsHandle, error)
-	ReadDir(VfsHandle, int, int) ([]DirInfo, error)
+	ReadDir(VfsHandle, int, int) ([]DirInfo, error) //int: pos, int: length
 
 	Readlink(VfsHandle) (string, error)
 
-	Unlink(VfsHandle) error
+	Remove(VfsHandle) error
 
 	//Rmdir(VfsNode, string) error
 
-	Truncate(VfsHandle, uint64) error
+	Truncate(VfsHandle, uint64) error    //uint64: size
+	Rename(VfsHandle, string, int) error //int:0x01 ReplaceIfExists
 
-	Rename(VfsHandle, string, int) error
-
-	Symlink(VfsHandle, string, int) (*Attributes, error)
-	Link(VfsNode, VfsNode, string) (*Attributes, error)
+	Symlink(VfsHandle, string, int) (*Attributes, error) //int: flag
+	Link(VfsNode, VfsNode, string) (*Attributes, error)  //not implement
 
 	Listxattr(VfsHandle) ([]string, error)
 	Getxattr(VfsHandle, string, []byte) (int, error)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/macos-fuse-t/go-smb2/config"
 	"github.com/macos-fuse-t/go-smb2/internal/smb2"
 	"github.com/macos-fuse-t/go-smb2/internal/utf16le"
 )
@@ -21,27 +22,23 @@ type Server struct {
 	nbDomain   string
 	dnsDomain  string
 	dnsName    string
-	accounts   map[string]string // User: Password
 	allowGuest bool
 
 	nmsg    []byte
 	cmsg    []byte
 	session *Session
+	DS      config.UesrPwdI
 }
 
-func NewServer(targetName, nbName, nbDomain, dnsName, dnsDomain string) *Server {
+func NewServer(targetName, nbName, nbDomain, dnsName, dnsDomain string, DS config.UesrPwdI) *Server {
 	return &Server{
 		targetName: targetName,
 		nbName:     nbName,
 		nbDomain:   nbDomain,
 		dnsDomain:  dnsDomain,
 		dnsName:    dnsName,
-		accounts:   make(map[string]string),
+		DS:         DS,
 	}
-}
-
-func (s *Server) AddAccount(user, password string) {
-	s.accounts[user] = password
 }
 
 func (s *Server) AllowGuest() {
@@ -232,13 +229,20 @@ func (s *Server) Authenticate(amsg []byte) (err error) {
 
 	if len(userName) != 0 || len(ntChallengeResponse) != 0 {
 		user := utf16le.DecodeToString(userName)
-		if _, ok := s.accounts[user]; !ok && !s.allowGuest {
-			return errors.New("no such user " + user)
+
+		var pwd string
+		if user == config.KGuest && s.allowGuest {
+		} else {
+			pwd, err = s.DS.UserPwd(user)
+			if err != nil {
+				return errors.New("no such user " + user)
+			}
 		}
+
 		expectedNtChallengeResponse := make([]byte, len(ntChallengeResponse))
 		ntlmv2ClientChallenge := ntChallengeResponse[16:]
 		USER := utf16le.EncodeStringToBytes(strings.ToUpper(user))
-		password := utf16le.EncodeStringToBytes(s.accounts[user])
+		password := utf16le.EncodeStringToBytes(pwd)
 		h := hmac.New(md5.New, ntowfv2(USER, password, domainName))
 		serverChallenge := s.cmsg[24:32]
 		timeStamp := ntlmv2ClientChallenge[8:16]

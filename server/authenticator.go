@@ -3,6 +3,7 @@ package smb2
 import (
 	"encoding/asn1"
 
+	"github.com/macos-fuse-t/go-smb2/config"
 	"github.com/macos-fuse-t/go-smb2/internal/ntlm"
 	"github.com/macos-fuse-t/go-smb2/internal/spnego"
 )
@@ -15,16 +16,18 @@ type Authenticator interface {
 	sessionKey() []byte   // QueryContextAttributes(ctx, SECPKG_ATTR_SESSION_KEY, &out)
 }
 
+var _ Authenticator = (*NTLMAuthenticator)(nil)
+
 // NTLMAuthenticator implements session-setup through NTLMv2.
 // It doesn't support NTLMv1. You can use Hash instead of Password.
 type NTLMAuthenticator struct {
-	UserPassword map[string]string
-	TargetSPN    string
-	NbDomain     string
-	NbName       string
-	DnsName      string
-	DnsDomain    string
-	AllowGuest   bool
+	DS         config.DSI
+	TargetSPN  string
+	NbDomain   string
+	NbName     string
+	DnsName    string
+	DnsDomain  string
+	AllowGuest bool
 
 	ntlm   *ntlm.Server
 	seqNum uint32
@@ -35,10 +38,8 @@ func (i *NTLMAuthenticator) oid() asn1.ObjectIdentifier {
 }
 
 func (i *NTLMAuthenticator) challenge(sc []byte) ([]byte, error) {
-	i.ntlm = ntlm.NewServer(i.TargetSPN, i.NbName, i.NbDomain, i.DnsName, i.DnsDomain)
-	for u, p := range i.UserPassword {
-		i.ntlm.AddAccount(u, p)
-	}
+	i.ntlm = ntlm.NewServer(i.TargetSPN, i.NbName, i.NbDomain, i.DnsName, i.DnsDomain, i.DS)
+
 	if i.AllowGuest {
 		i.ntlm.AllowGuest()
 	}

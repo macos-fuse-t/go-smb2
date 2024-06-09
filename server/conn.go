@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/macos-fuse-t/go-smb2/config"
 	. "github.com/macos-fuse-t/go-smb2/internal/erref"
 	. "github.com/macos-fuse-t/go-smb2/internal/smb2"
 	log "github.com/sirupsen/logrus"
@@ -118,6 +119,8 @@ type conn struct {
 
 	treeMapByName map[string]treeOps
 	treeMapById   map[uint32]treeOps
+
+	DS config.UserSharedI
 }
 
 func (conn *conn) shutdown() {

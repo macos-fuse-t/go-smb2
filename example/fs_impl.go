@@ -1,4 +1,4 @@
-package main
+package example
 
 import (
 	"crypto/rand"
@@ -389,7 +389,7 @@ func (fs *PassthroughFS) Readlink(handle vfs.VfsHandle) (string, error) {
 	return os.Readlink(open.path)
 }
 
-func (fs *PassthroughFS) Unlink(handle vfs.VfsHandle) error {
+func (fs *PassthroughFS) Remove(handle vfs.VfsHandle) error {
 	if handle == 0 {
 		return fmt.Errorf("bad handle")
 	}
