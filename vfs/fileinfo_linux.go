@@ -16,9 +16,9 @@ func CompatStat(stat os.FileInfo) (Stat, bool) {
 		Ino:     sysStat.Ino,
 		Blocks:  sysStat.Blocks,
 		BlkSize: int32(sysStat.Blksize),
-		Atime:   time.Unix(sysStat.Atim.Sec, sysStat.Atim.Nsec),
-		Mtime:   time.Unix(sysStat.Mtim.Sec, sysStat.Mtim.Nsec),
-		Ctime:   time.Unix(sysStat.Ctim.Sec, sysStat.Ctim.Nsec),
+		Atime:   time.Unix(int64(sysStat.Atim.Sec), int64(sysStat.Atim.Nsec)),
+		Mtime:   time.Unix(int64(sysStat.Mtim.Sec), int64(sysStat.Mtim.Nsec)),
+		Ctime:   time.Unix(int64(sysStat.Ctim.Sec), int64(sysStat.Ctim.Nsec)),
 		Btime:   time.Unix(0, 0),
 	}
 
