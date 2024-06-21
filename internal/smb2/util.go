@@ -6,9 +6,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
-	"syscall"
 	"unicode/utf16"
-	"unsafe"
 
 	"github.com/macos-fuse-t/go-smb2/vfs"
 )
@@ -45,15 +43,15 @@ func MatchWildcard(s, pattern string) bool {
 	return r.MatchString(s)
 }
 
-func DirentName(dirent *syscall.Dirent) string {
-	nameSlice := (*[256]byte)(unsafe.Pointer(&dirent.Name[0]))
+// func DirentName(dirent *syscall.Dirent) string {
+// 	nameSlice := (*[256]byte)(unsafe.Pointer(&dirent.Name[0]))
 
-	nameLen := 0
-	for ; nameLen < len(nameSlice) && nameSlice[nameLen] != 0; nameLen++ {
-	}
+// 	nameLen := 0
+// 	for ; nameLen < len(nameSlice) && nameSlice[nameLen] != 0; nameLen++ {
+// 	}
 
-	return string(nameSlice[:nameLen])
-}
+// 	return string(nameSlice[:nameLen])
+// }
 
 func Align(n int, a int) int {
 	return (n + a - 1) &^ (a - 1)
