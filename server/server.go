@@ -51,7 +51,8 @@ type Server struct {
 
 	ignoreSetAttrErr bool
 
-	activeConns map[*conn]struct{}
+	activeConnLock sync.Mutex
+	activeConns    map[*conn]struct{}
 
 	lock sync.Mutex
 
@@ -211,8 +212,22 @@ func (d *Server) Serve(addr string) error {
 			treeMapById:         make(map[uint32]treeOps),
 		}
 
+		d.activeConnLock.Lock()
+		defer d.activeConnLock.Unlock()
 		d.activeConns[conn] = struct{}{}
-		go conn.runReciever()
+
+		rmConn := func() {
+			d.activeConnLock.Lock()
+			defer d.activeConnLock.Unlock()
+
+			conn.shutdown()
+			delete(d.activeConns, conn)
+		}
+
+		go func() {
+			conn.runReciever()
+			rmConn()
+		}()
 		go conn.runSender()
 		// Handle the connection in a new goroutine.
 		go func() {
@@ -220,6 +235,7 @@ func (d *Server) Serve(addr string) error {
 				// Run failed
 				log.Errorf("err: %v", err)
 				c.Close()
+				rmConn()
 			}
 		}()
 	}
@@ -229,6 +245,10 @@ func (d *Server) Serve(addr string) error {
 func (d *Server) Shutdown() {
 	d.active = false
 	d.listener.Close()
+
+	d.activeConnLock.Lock()
+	defer d.activeConnLock.Unlock()
+
 	for c := range d.activeConns {
 		c.shutdown()
 	}

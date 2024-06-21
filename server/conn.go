@@ -97,10 +97,11 @@ type conn struct {
 
 	account *account
 
-	rdone chan struct{}
-	wdone chan struct{}
-	write chan []byte
-	werr  chan error
+	rdone  chan struct{}
+	wdone  chan struct{}
+	write  chan []byte
+	werr   chan error
+	closed bool
 
 	m sync.Mutex
 
@@ -124,9 +125,18 @@ type conn struct {
 }
 
 func (conn *conn) shutdown() {
+	if conn.closed {
+		return
+	}
+	conn.closed = true
+
 	conn.cancel()
-	conn.wdone <- struct{}{}
-	conn.rdone <- struct{}{}
+
+	close(conn.wdone) // <- struct{}{}
+	close(conn.rdone) // <- struct{}{}
+	close(conn.write)
+	close(conn.werr)
+
 	conn.t.Close()
 }
 
@@ -319,7 +329,8 @@ exit:
 
 	conn.err = err
 
-	close(conn.wdone)
+	// close(conn.wdone)
+
 	log.Debugf("receiver finished")
 }
 
