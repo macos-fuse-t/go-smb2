@@ -10,6 +10,7 @@ import (
 type AppConfig struct {
 	Debug       bool
 	Console     bool
+	LogDir      string
 	ListenAddr  string
 	MountDir    string
 	ShareName   string

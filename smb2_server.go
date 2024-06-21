@@ -18,7 +18,7 @@ func main() {
 
 	userPwd := map[string]string{"a": "a"}
 	shared := map[string]vfs.VFSFileSystem{cfg.ShareName: example.NewPassthroughFS(cfg.MountDir)}
-	ds := example.NewDS(userPwd, shared)
+	ds := example.NewDS(userPwd, shared, shared)
 	example.Run(cfg, ds, cfg.ShareName)
 
 }

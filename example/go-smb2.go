@@ -3,6 +3,7 @@ package example
 import (
 	"os"
 	"os/signal"
+	"path/filepath"
 
 	"github.com/macos-fuse-t/go-smb2/bonjour"
 	"github.com/macos-fuse-t/go-smb2/config"
@@ -51,10 +52,12 @@ func InitLogs(cfg config.AppConfig) {
 		log.SetLevel(log.InfoLevel)
 	}
 
-	homeDir, _ := os.UserHomeDir()
+	if len(cfg.LogDir) == 0 {
+		cfg.LogDir, _ = os.UserHomeDir()
+	}
 	if !cfg.Console {
 		log.SetOutput(&lumberjack.Logger{
-			Filename:   homeDir + "smb2-go.log",
+			Filename:   filepath.Join(cfg.LogDir, "smb2-go.log"),
 			MaxSize:    100, // megabytes
 			MaxBackups: 3,
 			MaxAge:     28,   //days

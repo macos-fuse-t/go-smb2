@@ -35,6 +35,9 @@ func init() {
 	cfg.Advertise = false
 	cfg.AllowGuest = false
 	cfg.AllowGuest = true
+	cfg.LogDir, _ = os.Getwd()
+	cfg.Debug = true
+	cfg.Console = false
 }
 
 func Test_goSmb2(t *testing.T) {
