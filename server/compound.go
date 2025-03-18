@@ -14,6 +14,10 @@ type compoundContext struct {
 	rsp [][]byte
 }
 
+func (ctx *compoundContext) isEmpty() bool {
+	return len(ctx.rsp) == 0
+}
+
 func (ctx *compoundContext) addResponse(pkt []byte) {
 	ctx.rsp = append(ctx.rsp, pkt)
 }
@@ -28,16 +32,9 @@ func (ctx *compoundContext) Size() int {
 
 func (ctx *compoundContext) Encode(buf []byte) {
 	off := 0
-	for i, p := range ctx.rsp {
+	for _, p := range ctx.rsp {
 		pkt := PacketCodec(p)
-		if i > 0 {
-			pkt.SetFlags(pkt.Flags() | SMB2_FLAGS_RELATED_OPERATIONS)
-		}
 		l := Align(len(p), 8)
-		if i != len(ctx.rsp)-1 {
-			pkt.SetNextCommand(uint32(l))
-		}
-
 		copy(buf[off:], pkt)
 		off += l
 	}

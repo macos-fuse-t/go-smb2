@@ -114,7 +114,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		}
 	case FILE_OPEN:
 		if !fileExists {
-			log.Debugf("Open: doesn't exists: %s", r.Name())
+			log.Debugf("Open: doesn't exist: %s", r.Name())
 			rsp := new(ErrorResponse)
 			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NO_SUCH_FILE))
 			return c.sendPacket(rsp, &t.treeConn, ctx)
@@ -594,7 +594,7 @@ func (t *fileTree) read(ctx *compoundContext, pkt []byte) error {
 
 	open := t.conn.serverCtx.getOpen(fileId.HandleId())
 	if open == nil {
-		log.Errorf("read: no open")
+		log.Errorf("read: no open: %d", fileId.HandleId())
 		rsp := new(ErrorResponse)
 		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
@@ -1042,6 +1042,28 @@ func newFileBothDirectoryInformationInfo(d vfs.DirInfo) FileBothDirectoryInforma
 	return info
 }
 
+func newFileIdAllExtdBothDirectoryInformationInfo(d vfs.DirInfo) FileIdAllExtdBothDirectoryInformationInfo {
+	info := FileIdAllExtdBothDirectoryInformationInfo{
+		FileIndex: 0,
+		FileName:  d.Name,
+		FileId:    d.GetInodeNumber(),
+	}
+
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	info.EndOfFile = SizeFromVfs(&d.Attributes)
+	info.AllocationSize = DiskSizeFromVfs(&d.Attributes)
+	info.FileAttributes = PermissionsFromVfs(&d.Attributes, d.Name)
+
+	if info.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		info.EaSize = IO_REPARSE_TAG_SYMLINK
+	}
+
+	return info
+}
+
 func newFileIdBothDirectoryInformationInfo2(d vfs.DirInfo) FileIdBothDirectoryInformationInfo2 {
 	info := FileIdBothDirectoryInformationInfo2{
 		FileIndex: 0,
@@ -1066,10 +1088,19 @@ func newFileIdBothDirectoryInformationInfo2(d vfs.DirInfo) FileIdBothDirectoryIn
 	return info
 }
 
+func newFileNamesInformationInfo(d vfs.DirInfo) FileNamesInformationInfo {
+	info := FileNamesInformationInfo{
+		FileName: d.Name,
+	}
+	return info
+}
+
 func (t *fileTree) makeItem(class uint8, d vfs.DirInfo) Encoder {
 	switch class {
 	case FileBothDirectoryInformation:
 		return newFileBothDirectoryInformationInfo(d)
+	case FileNamesInformation:
+		return newFileNamesInformationInfo(d)
 	case FileIdBothDirectoryInformation:
 		if t.aaplExtensions {
 			return newFileIdBothDirectoryInformationInfo2(d)
@@ -1081,8 +1112,10 @@ func (t *fileTree) makeItem(class uint8, d vfs.DirInfo) Encoder {
 		return newFileFullDirectoryInformationInfo(d)
 	case FileIdFullDirectoryInformation:
 		return newFileIdFullDirectoryInformationInfo(d)
+	case FileIdAllExtdBothDirectoryInformation:
+		return newFileIdAllExtdBothDirectoryInformationInfo(d)
 	default:
-		log.Errorf("bad info class %d", class)
+		log.Warningf("bad info class %d", class)
 	}
 	return nil
 }
@@ -1096,11 +1129,15 @@ func (t *fileTree) queryDirectory(ctx *compoundContext, pkt []byte) error {
 	r := QueryDirectoryRequestDecoder(res)
 
 	switch r.FileInfoClass() {
-	case FileIdBothDirectoryInformation, FileFullDirectoryInformation,
-		FileDirectoryInformation, FileIdFullDirectoryInformation, FileBothDirectoryInformation:
+	case FileIdBothDirectoryInformation, FileFullDirectoryInformation, FileNamesInformation,
+		FileDirectoryInformation, FileIdFullDirectoryInformation, FileBothDirectoryInformation,
+		FileIdAllExtdBothDirectoryInformation:
 		break
 	default:
 		log.Errorf("wrong info class %d", r.FileInfoClass())
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_PARAMETER))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
 	log.Debugf("search patter: %s", r.FileName())
@@ -1347,7 +1384,7 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 
 	open := t.conn.serverCtx.getOpen(fileId.HandleId())
 	if open == nil {
-		log.Errorf("queryInfoFile: open not found")
+		log.Errorf("queryInfoFile: open not found: %d", fileId.HandleId())
 		rsp := new(ErrorResponse)
 		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
@@ -1432,14 +1469,27 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 		}
 		info = items
 	case FileNetworkOpenInformation:
-		info = &FileNetworkOpenInformationInfo{
-			CreationTime:   *BirthTimeFromVfs(a),
-			LastAccessTime: *AccessTimeFromVfs(a),
-			LastWriteTime:  *ModifiedTimeFromVfs(a),
-			ChangeTime:     *ChangeTimeFromVfs(a),
-			AllocationSize: int64(DiskSizeFromVfs(a)),
-			EndOfFile:      int64(SizeFromVfs(a)),
-			FileAttributes: PermissionsFromVfs(a, open.pathName),
+		if !open.isEa {
+			info = &FileNetworkOpenInformationInfo{
+				CreationTime:   *BirthTimeFromVfs(a),
+				LastAccessTime: *AccessTimeFromVfs(a),
+				LastWriteTime:  *ModifiedTimeFromVfs(a),
+				ChangeTime:     *ChangeTimeFromVfs(a),
+				AllocationSize: int64(DiskSizeFromVfs(a)),
+				EndOfFile:      int64(SizeFromVfs(a)),
+				FileAttributes: PermissionsFromVfs(a, open.pathName),
+			}
+		} else {
+			len, _ := t.fs.Getxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, nil)
+			info = &FileNetworkOpenInformationInfo{
+				CreationTime:   *BirthTimeFromVfs(a),
+				LastAccessTime: *AccessTimeFromVfs(a),
+				LastWriteTime:  *ModifiedTimeFromVfs(a),
+				ChangeTime:     *ChangeTimeFromVfs(a),
+				AllocationSize: int64(len),
+				EndOfFile:      int64(len),
+				FileAttributes: PermissionsFromVfs(a, open.pathName),
+			}
 		}
 	case FileNormalizedNameInformation:
 		rsp := new(ErrorResponse)
@@ -1634,6 +1684,21 @@ func (t *fileTree) setEndOfFileInfo(ctx *compoundContext, fileId *FileId, pkt []
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
 
+func (t *fileTree) setEndOfFileInfoEa(ctx *compoundContext, fileId *FileId, eaKey string, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+	info := FileEndOfFileInformationDecoder(r.Buffer())
+
+	v := make([]byte, info.EndOfFile())
+	t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), eaKey, v)
+
+	rsp := new(SetInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
 func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, pkt []byte) error {
 	c := t.session.conn
 
@@ -1778,9 +1843,10 @@ func (t *fileTree) setInfo(ctx *compoundContext, pkt []byte) error {
 			return t.setBasicInfo(ctx, fileId, pkt)
 		}
 	case FileEndOfFileInformation:
-		if !open.isEa {
-			return t.setEndOfFileInfo(ctx, fileId, pkt)
+		if open.isEa {
+			return t.setEndOfFileInfoEa(ctx, fileId, open.eaKey, pkt)
 		}
+		return t.setEndOfFileInfo(ctx, fileId, pkt)
 	case FileDispositionInformation:
 		if open.isEa {
 			return t.setDispositionInfoEa(ctx, fileId, open.eaKey, pkt)

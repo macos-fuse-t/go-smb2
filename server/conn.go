@@ -481,6 +481,17 @@ func (conn *conn) tryHandle(pkt []byte, compCtx *compoundContext, e error) error
 func (conn *conn) sendPacket(req Packet, tc *treeConn, compCtx *compoundContext) error {
 	conn.m.Lock()
 
+	if compCtx != nil {
+		if !compCtx.isEmpty() {
+			req.Header().Flags |= SMB2_FLAGS_RELATED_OPERATIONS
+		}
+
+		if req.Header().MessageId != compCtx.lastMsgId {
+			l := Align(req.Size(), 8)
+			req.Header().NextCommand = uint32(l)
+		}
+	}
+
 	pkt, err := conn.encodePacket(req, tc, conn.ctx)
 	if err != nil {
 		conn.m.Unlock()

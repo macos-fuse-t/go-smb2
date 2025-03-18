@@ -306,6 +306,23 @@ func (i *FilePositionInformationInfo) Encode(pkt []byte) {
 	le.PutUint64(pkt[:], uint64(i.CurrentByteOffset))
 }
 
+type FileNamesInformationInfo struct {
+	NextEntryOffset uint32
+	FileIndex       uint32
+	FileName        string
+}
+
+func (i FileNamesInformationInfo) Size() int {
+	return Align(12+int(utf16le.EncodedStringLen(i.FileName)), 8)
+}
+
+func (i FileNamesInformationInfo) Encode(pkt []byte) {
+	le.PutUint32(pkt[0:], i.NextEntryOffset)
+	le.PutUint64(pkt[4:], uint64(i.FileIndex))
+	le.PutUint32(pkt[8:], uint32(utf16le.EncodedStringLen(i.FileName)))
+	utf16le.EncodeString(pkt[12:], i.FileName)
+}
+
 type FileStandardInformationInfo struct {
 	AllocationSize int64
 	EndOfFile      int64
@@ -723,6 +740,56 @@ func (i FileIdFullDirectoryInformationInfo) Encode(pkt []byte) {
 	le.PutUint32(pkt[64:], i.EaSize)
 	le.PutUint64(pkt[72:], i.FileId)
 	utf16le.EncodeString(pkt[80:], i.FileName)
+}
+
+type FileIdAllExtdBothDirectoryInformationInfo struct {
+	NextEntryOffset uint32 // Byte offset of the next file or directory entry, 0 if this is the last entry
+	FileIndex       uint32
+	CreationTime    Filetime
+	LastAccessTime  Filetime
+	LastWriteTime   Filetime
+	ChangeTime      Filetime
+	EndOfFile       uint64
+	AllocationSize  uint64
+	FileAttributes  uint32
+	EaSize          uint32
+	ReparsePointTag uint32
+	FileId          uint64 // 64-bit unique file identifier
+	FileId128       uint64
+	FileId128_2     uint64
+	ShortNameLength uint8
+	Pad             uint8
+	ShortName       [24]byte // The file's short name in 8.3 format
+	FileName        string
+}
+
+// Size returns the size of the encoded structure.
+func (i FileIdAllExtdBothDirectoryInformationInfo) Size() int {
+	return Align(122+utf16le.EncodedStringLen(i.FileName), 16)
+}
+
+// Encode serializes the structure into the given byte slice.
+func (i FileIdAllExtdBothDirectoryInformationInfo) Encode(pkt []byte) {
+	binary.LittleEndian.PutUint32(pkt[:], i.NextEntryOffset)
+	binary.LittleEndian.PutUint32(pkt[4:], i.FileIndex)
+	i.CreationTime.Encode(pkt[8:])
+	i.LastAccessTime.Encode(pkt[16:])
+	i.LastWriteTime.Encode(pkt[24:])
+	i.ChangeTime.Encode(pkt[32:])
+	binary.LittleEndian.PutUint64(pkt[40:], i.EndOfFile)
+	binary.LittleEndian.PutUint64(pkt[48:], i.AllocationSize)
+	binary.LittleEndian.PutUint32(pkt[56:], i.FileAttributes)
+	binary.LittleEndian.PutUint32(pkt[60:], uint32(utf16le.EncodedStringLen(i.FileName)))
+	binary.LittleEndian.PutUint32(pkt[64:], i.EaSize)
+	binary.LittleEndian.PutUint32(pkt[68:], i.ReparsePointTag)
+	binary.LittleEndian.PutUint64(pkt[72:], i.FileId)
+	binary.LittleEndian.PutUint64(pkt[80:], i.FileId128)
+	binary.LittleEndian.PutUint64(pkt[88:], i.FileId128_2)
+	pkt[96] = i.ShortNameLength
+	pkt[97] = i.Pad
+	copy(pkt[98:122], i.ShortName[:])
+
+	utf16le.EncodeString(pkt[122:], i.FileName)
 }
 
 type FileInformationInfoResponse struct {
