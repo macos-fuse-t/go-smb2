@@ -393,7 +393,7 @@ type FileFsAttributeInformationInfo struct {
 }
 
 func (i *FileFsAttributeInformationInfo) Size() int {
-	return 12 + utf16le.EncodedStringLen(i.FileSystemName)
+	return Align(12+utf16le.EncodedStringLen(i.FileSystemName), 8)
 }
 
 func (i *FileFsAttributeInformationInfo) Encode(pkt []byte) {
@@ -508,7 +508,7 @@ type FileFsVolumeInformationInfo struct {
 }
 
 func (i FileFsVolumeInformationInfo) Size() int {
-	return 18 + utf16le.EncodedStringLen(i.VolumeLabel)
+	return Align(18+utf16le.EncodedStringLen(i.VolumeLabel), 8)
 }
 
 func (i FileFsVolumeInformationInfo) Encode(pkt []byte) {
@@ -602,7 +602,7 @@ type FileBothDirectoryInformationInfo struct {
 }
 
 func (i FileBothDirectoryInformationInfo) Size() int {
-	return Align(82+int(utf16le.EncodedStringLen(i.FileName)), 16)
+	return Align(82+int(utf16le.EncodedStringLen(i.FileName)), 8)
 }
 
 func (i FileBothDirectoryInformationInfo) Encode(pkt []byte) {
@@ -641,7 +641,7 @@ type FileIdBothDirectoryInformationInfo struct {
 }
 
 func (i FileIdBothDirectoryInformationInfo) Size() int {
-	return Align(104+int(utf16le.EncodedStringLen(i.FileName)), 16)
+	return Align(104+int(utf16le.EncodedStringLen(i.FileName)), 8)
 }
 
 func (i FileIdBothDirectoryInformationInfo) Encode(pkt []byte) {
@@ -682,7 +682,7 @@ type FileIdBothDirectoryInformationInfo2 struct {
 }
 
 func (i FileIdBothDirectoryInformationInfo2) Size() int {
-	return Align(104+int(utf16le.EncodedStringLen(i.FileName)), 16)
+	return Align(104+int(utf16le.EncodedStringLen(i.FileName)), 8)
 }
 
 func (i FileIdBothDirectoryInformationInfo2) Encode(pkt []byte) {
@@ -765,7 +765,7 @@ type FileIdAllExtdBothDirectoryInformationInfo struct {
 
 // Size returns the size of the encoded structure.
 func (i FileIdAllExtdBothDirectoryInformationInfo) Size() int {
-	return Align(122+utf16le.EncodedStringLen(i.FileName), 16)
+	return Align(122+utf16le.EncodedStringLen(i.FileName), 8)
 }
 
 // Encode serializes the structure into the given byte slice.

@@ -1488,7 +1488,7 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 				ChangeTime:     *ChangeTimeFromVfs(a),
 				AllocationSize: int64(len),
 				EndOfFile:      int64(len),
-				FileAttributes: PermissionsFromVfs(a, open.pathName),
+				FileAttributes: 0,
 			}
 		}
 	case FileNormalizedNameInformation:
@@ -1792,7 +1792,7 @@ func (t *fileTree) setSecInfo(ctx *compoundContext, fileId *FileId, pkt []byte) 
 
 	if !foundNfsSid {
 		rsp := new(ErrorResponse)
-		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
@@ -1842,6 +1842,7 @@ func (t *fileTree) setInfo(ctx *compoundContext, pkt []byte) error {
 		if !open.isEa {
 			return t.setBasicInfo(ctx, fileId, pkt)
 		}
+		status = uint32(STATUS_NOT_SUPPORTED)
 	case FileEndOfFileInformation:
 		if open.isEa {
 			return t.setEndOfFileInfoEa(ctx, fileId, open.eaKey, pkt)

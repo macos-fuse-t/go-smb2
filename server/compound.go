@@ -24,8 +24,12 @@ func (ctx *compoundContext) addResponse(pkt []byte) {
 
 func (ctx *compoundContext) Size() int {
 	s := 0
-	for _, pkt := range ctx.rsp {
-		s += Align(len(pkt), 8)
+	for i, pkt := range ctx.rsp {
+		if i != len(ctx.rsp)-1 {
+			s += Align(len(pkt), 8)
+		} else {
+			s += len(pkt)
+		}
 	}
 	return s
 }
