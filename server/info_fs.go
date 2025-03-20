@@ -192,7 +192,7 @@ type FileEaInformationInfo struct {
 }
 
 func (i *FileEaInformationInfo) Size() int {
-	return 4
+	return 8
 }
 
 func (i *FileEaInformationInfo) Encode(pkt []byte) {

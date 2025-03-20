@@ -257,6 +257,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		isEa:              isEA,
 		eaKey:             eaKey,
 		isSymlink:         isSymlink,
+		deleteAfterClose:  (r.CreateOptions()&FILE_DELETE_ON_CLOSE != 0),
 	}
 
 	cc := r.CreateContexts()
@@ -481,6 +482,7 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 
 	rsp.Status = status
 
+	open := t.conn.serverCtx.getOpen(fileId.HandleId())
 	if r.Flags()&SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB != 0 {
 		a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 		if err != nil {
@@ -488,7 +490,6 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 			goto send
 		}
 
-		open := t.conn.serverCtx.getOpen(fileId.HandleId())
 		if open == nil {
 			log.Errorf("close: no open")
 			goto send
@@ -503,6 +504,12 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 		rsp.FileAttributes = PermissionsFromVfs(a, open.pathName)
 	}
 send:
+	if open != nil && open.deleteAfterClose {
+		if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
+			log.Errorf("Delete failed: %v", err)
+		}
+	}
+
 	t.conn.serverCtx.deleteOpen(fileId.HandleId())
 	t.fs.Close(vfs.VfsHandle(fileId.HandleId()))
 
@@ -694,7 +701,6 @@ func (t *fileTree) write(ctx *compoundContext, pkt []byte) error {
 	}
 
 	go func() {
-
 		t.ioWriteSem <- struct{}{}
 		defer func() { <-t.ioWriteSem }()
 
@@ -1699,15 +1705,35 @@ func (t *fileTree) setEndOfFileInfoEa(ctx *compoundContext, fileId *FileId, eaKe
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
 
-func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, pkt []byte) error {
+func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open *Open, pkt []byte) error {
 	c := t.session.conn
 
-	if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
-		log.Errorf("Delete failed: %v", err)
+	attrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
+	if err != nil {
+		log.Errorf("Delete failed to get attrs: %v", err)
 		rsp := new(ErrorResponse)
-		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
+
+	if attrs.GetFileType() == vfs.FileTypeDirectory {
+		if dir, err := t.fs.ReadDir(vfs.VfsHandle(fileId.HandleId()), 0, 1000); err == nil {
+			isEmpty := true
+			for _, d := range dir {
+				if d.Name != "." && d.Name != ".." {
+					isEmpty = false
+					break
+				}
+			}
+			if !isEmpty {
+				log.Debugf("Delete failed: directory not empty: %v", err)
+				rsp := new(ErrorResponse)
+				PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_DIRECTORY_NOT_EMPTY))
+				return c.sendPacket(rsp, &t.treeConn, ctx)
+			}
+		}
+	}
+	open.deleteAfterClose = true
 
 	rsp := new(SetInfoResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
@@ -1852,7 +1878,7 @@ func (t *fileTree) setInfo(ctx *compoundContext, pkt []byte) error {
 		if open.isEa {
 			return t.setDispositionInfoEa(ctx, fileId, open.eaKey, pkt)
 		}
-		return t.setDispositionInfo(ctx, fileId, pkt)
+		return t.setDispositionInfo(ctx, fileId, open, pkt)
 	case FileRenameInformation:
 		if !open.isEa {
 			return t.setRename(ctx, fileId, pkt)

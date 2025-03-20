@@ -40,7 +40,7 @@ func (d *SecurityDescriptor) Size() int {
 	if d.Dacl != nil {
 		s += d.Dacl.Size()
 	}
-	return s
+	return smb2.Align(s, 8)
 }
 
 func (d *SecurityDescriptor) Encode(b []uint8) {

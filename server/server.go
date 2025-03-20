@@ -86,6 +86,7 @@ type Open struct {
 	fileName                    string
 	resumeKey                   [24]byte
 	createOptions               uint32
+	deleteAfterClose            bool
 	createDisposition           uint32
 	fileAttributes              uint32
 	clientGuid                  Guid

@@ -192,7 +192,9 @@ func PrepareResponse(rsp *PacketHeader, req []byte, status uint32) {
 func PrepareAsyncResponse(rsp *PacketHeader, req []byte, asyncId uint64, status uint32) {
 	p := PacketCodec(req)
 	rsp.Command = p.Command()
-	rsp.CreditRequestResponse = p.CreditRequest()
+	if status != 0 {
+		rsp.CreditRequestResponse = p.CreditRequest()
+	}
 	rsp.MessageId = p.MessageId()
 	rsp.Flags = SMB2_FLAGS_SERVER_TO_REDIR
 	if asyncId != 0 {
