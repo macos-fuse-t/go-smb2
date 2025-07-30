@@ -87,7 +87,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		if d != FILE_CREATE {
 			status = STATUS_NOT_A_DIRECTORY
 		}
-		log.Errorf("requested file exists and it's not a directory")
+		log.Errorf("requested file %s exists and it's not a directory", name)
 		rsp := new(ErrorResponse)
 		PrepareResponse(&rsp.PacketHeader, pkt, uint32(status))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
@@ -504,14 +504,16 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 		rsp.FileAttributes = PermissionsFromVfs(a, open.pathName)
 	}
 send:
-	if open != nil && open.deleteAfterClose {
+	if open != nil && open.deleteAfterClose && !open.isEa {
 		if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
 			log.Errorf("Delete failed: %v", err)
 		}
 	}
 
 	t.conn.serverCtx.deleteOpen(fileId.HandleId())
-	t.fs.Close(vfs.VfsHandle(fileId.HandleId()))
+	if !open.isEa {
+		t.fs.Close(vfs.VfsHandle(fileId.HandleId()))
+	}
 
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
