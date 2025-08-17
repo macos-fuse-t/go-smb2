@@ -193,6 +193,7 @@ func (conn *conn) runSender() {
 	for {
 		select {
 		case <-conn.wdone:
+			log.Debugf("runsender finished")
 			return
 		case pkt := <-conn.write:
 			_, err := conn.t.Write(pkt)
@@ -316,8 +317,9 @@ exit:
 
 	conn.err = err
 
-	close(conn.wdone)
 	log.Debugf("receiver finished")
+
+	conn.shutdown()
 }
 
 func accept(cmd uint16, pkt []byte) (res []byte, err error) {

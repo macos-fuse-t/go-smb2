@@ -55,6 +55,8 @@ type Server struct {
 
 	activeConns map[*conn]struct{}
 
+	acceptSingleConn bool
+
 	lock sync.Mutex
 }
 
@@ -140,6 +142,7 @@ type ServerConfig struct {
 	MaxIOWrites      int
 	Xatrrs           bool
 	IgnoreSetAttrErr bool
+	AcceptSingleConn bool
 }
 
 func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFileSystem) *Server {
@@ -159,6 +162,7 @@ func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFile
 		xattrs:           cfg.Xatrrs,
 		ignoreSetAttrErr: cfg.IgnoreSetAttrErr,
 		activeConns:      map[*conn]struct{}{},
+		acceptSingleConn: cfg.AcceptSingleConn,
 	}
 	return srv
 }
@@ -219,14 +223,22 @@ func (d *Server) Serve(addr string) error {
 		d.activeConns[conn] = struct{}{}
 		go conn.runReciever()
 		go conn.runSender()
-		// Handle the connection in a new goroutine.
-		go func() {
-			if err = conn.Run(); err != nil {
-				// Run failed
+
+		run := func() {
+			if err := conn.Run(); err != nil {
 				log.Errorf("err: %v", err)
 				c.Close()
+				if d.acceptSingleConn {
+					d.active = false
+				}
 			}
-		}()
+		}
+		if d.acceptSingleConn {
+			run()
+		} else {
+			// Handle the connection in a new goroutine.
+			go run()
+		}
 	}
 	return nil
 }
