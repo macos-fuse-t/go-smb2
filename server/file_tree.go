@@ -560,7 +560,7 @@ func (t *fileTree) readEA(ctx *compoundContext, fileId *FileId, open *Open, buf 
 		if open.eaKey == "AFP_AfpInfo" && len(buf) == 60 {
 			info := AfpInfo{
 				Signature: [4]byte{'A', 'F', 'P', '_'},
-				Version:   [4]byte{0x00, 0x01, 0x00, 0x00},
+				//Version:   [4]byte{0x00, 0x01, 0x00, 0x00},
 			}
 			info.Encode(buf)
 			n = 60
@@ -1631,7 +1631,7 @@ func (t *fileTree) queryInfo(ctx *compoundContext, pkt []byte) error {
 	return nil
 }
 
-func (t *fileTree) setBasicInfo(ctx *compoundContext, fileId *FileId, pkt []byte) error {
+func (t *fileTree) setBasicInfo(ctx *compoundContext, fileId *FileId, open *Open, pkt []byte) error {
 	c := t.session.conn
 
 	res, _ := accept(SMB2_SET_INFO, pkt)
@@ -1665,11 +1665,13 @@ func (t *fileTree) setBasicInfo(ctx *compoundContext, fileId *FileId, pkt []byte
 		a.SetBirthTime(time.Unix(seconds, nanoseconds))
 	}
 
-	if _, err := t.fs.SetAttr(vfs.VfsHandle(fileId.HandleId()), a); err != nil && !c.serverCtx.ignoreSetAttrErr {
-		log.Errorf("SetAttr failed: %v", err)
-		rsp := new(ErrorResponse)
-		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
-		return c.sendPacket(rsp, &t.treeConn, ctx)
+	if !open.isEa {
+		if _, err := t.fs.SetAttr(vfs.VfsHandle(fileId.HandleId()), a); err != nil && !c.serverCtx.ignoreSetAttrErr {
+			log.Errorf("SetAttr failed: %v", err)
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
 	}
 
 	rsp := new(SetInfoResponse)
@@ -1865,10 +1867,7 @@ func (t *fileTree) setInfo(ctx *compoundContext, pkt []byte) error {
 	status := uint32(0)
 	switch r.FileInfoClass() {
 	case FileBasicInformation:
-		if !open.isEa {
-			return t.setBasicInfo(ctx, fileId, pkt)
-		}
-		status = uint32(STATUS_NOT_SUPPORTED)
+		return t.setBasicInfo(ctx, fileId, open, pkt)
 	case FileEndOfFileInformation:
 		if open.isEa {
 			return t.setEndOfFileInfoEa(ctx, fileId, open.eaKey, pkt)
