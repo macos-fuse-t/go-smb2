@@ -111,6 +111,15 @@ type Open struct {
 }
 
 type Lease struct {
+	LeaseKey       Guid
+	LeaseState     uint32
+	LeaseFlags     uint32
+	LeaseDuration  uint64
+	ParentLeaseKey Guid
+	Epoch          uint16
+	Version        int
+	Breaking       bool
+	BreakToState   uint32
 }
 
 // Negotiator contains options for func (*Dialer) Dial.
@@ -221,7 +230,7 @@ func (d *Server) Serve(addr string) error {
 			treeMapById:         make(map[uint32]treeOps),
 		}
 
-		log.Errorf("activeConn :%d, accept more: %v", len(d.activeConns), d.acceptSingleConn)
+		log.Debugf("activeConn :%d, accept more: %v", len(d.activeConns), d.acceptSingleConn)
 		if len(d.activeConns) > 0 && d.acceptSingleConn {
 			accept := true
 			for c := range d.activeConns {
@@ -991,4 +1000,94 @@ func (d *Server) deleteOpen(fileId uint64) {
 			delete(d.opensByGuid, open.createGuid)
 		}
 	}
+}
+
+func (d *Server) BreakNode(node uint64) {
+	opens := d.opensForNode(node)
+	for _, open := range opens {
+		if err := d.breakOpen(open); err != nil {
+			log.WithError(err).Debugf("failed to break cache for node=%d handle=%d", node, open.fileId)
+		}
+	}
+}
+
+func (d *Server) opensForNode(node uint64) []*Open {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	opens := make([]*Open, 0)
+	for _, open := range d.opens {
+		if open.durableFileId == node {
+			opens = append(opens, open)
+		}
+	}
+	return opens
+}
+
+func (d *Server) breakOpen(open *Open) error {
+	if open == nil || open.session == nil || open.session.conn == nil {
+		return nil
+	}
+
+	switch open.oplockLevel {
+	case SMB2_OPLOCK_LEVEL_NONE:
+		return nil
+	case SMB2_OPLOCK_LEVEL_LEASE:
+		return d.sendLeaseBreak(open)
+	default:
+		return d.sendOplockBreak(open)
+	}
+}
+
+func (d *Server) sendOplockBreak(open *Open) error {
+	if open.oplockState == LOCKSTATE_BREAKING {
+		return nil
+	}
+
+	fileID := &FileId{}
+	fileID.SetHandleId(open.fileId)
+	fileID.SetNodeId(open.durableFileId)
+
+	rsp := &OplockBreakNotification{
+		OplockLevel: SMB2_OPLOCK_LEVEL_NONE,
+		FileId:      fileID,
+	}
+	rsp.MessageId = ^uint64(0)
+	rsp.Flags = SMB2_FLAGS_SERVER_TO_REDIR
+	rsp.CreditRequestResponse = 1
+
+	if open.oplockLevel == SMB2_OPLOCK_LEVEL_II {
+		open.oplockLevel = SMB2_OPLOCK_LEVEL_NONE
+		open.oplockState = LOCKSTATE_NONE
+	} else {
+		open.oplockState = LOCKSTATE_BREAKING
+	}
+
+	log.Debugf("sending oplock break node=%d handle=%d level=%d", open.durableFileId, open.fileId, open.oplockLevel)
+	return open.session.conn.sendPacket(rsp, nil, nil)
+}
+
+func (d *Server) sendLeaseBreak(open *Open) error {
+	if open.lease == nil || open.lease.Breaking {
+		return nil
+	}
+
+	open.lease.Epoch++
+	open.lease.Breaking = true
+	open.lease.BreakToState = SMB2_LEASE_NONE
+	open.oplockState = LOCKSTATE_BREAKING
+
+	rsp := &LeaseBreakNotification{
+		NewEpoch:          open.lease.Epoch,
+		Flags:             SMB2_NOTIFY_BREAK_LEASE_FLAG_ACK_REQUIRED,
+		LeaseKey:          open.lease.LeaseKey,
+		CurrentLeaseState: open.lease.LeaseState,
+		NewLeaseState:     SMB2_LEASE_NONE,
+	}
+	rsp.MessageId = ^uint64(0)
+	rsp.Flags = SMB2_FLAGS_SERVER_TO_REDIR
+	rsp.CreditRequestResponse = 1
+
+	log.Debugf("sending lease break node=%d handle=%d lease_state=%d", open.durableFileId, open.fileId, open.lease.LeaseState)
+	return open.session.conn.sendPacket(rsp, nil, nil)
 }

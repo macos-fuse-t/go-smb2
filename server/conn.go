@@ -142,8 +142,9 @@ func (conn *conn) resetSession() {
 func (conn *conn) encodePacket(req Packet, tc *treeConn, ctx context.Context) ([]byte, error) {
 	var err error
 	hdr := req.Header()
+	isNotification := hdr.MessageId == ^uint64(0)
 
-	if _, ok := req.(*CancelRequest); !ok {
+	if _, ok := req.(*CancelRequest); !ok && !isNotification {
 		creditCharge := hdr.CreditCharge
 
 		conn.sequenceWindow += uint64(creditCharge)

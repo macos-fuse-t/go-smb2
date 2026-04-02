@@ -173,7 +173,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		flags |= O_EXLOCK
 		lockState = LOCKSTATE_HELD
 	case SMB2_OPLOCK_LEVEL_LEASE:
-		break
+		lockState = LOCKSTATE_HELD
 	default:
 		lockLevel = 0
 	}
@@ -338,6 +338,13 @@ func (t *fileTree) handleDH2Q(pkt []byte, open *Open) (Encoder, error) {
 func (t *fileTree) handleRqLs(pkt []byte, open *Open) (Encoder, error) {
 	if len(pkt) == 32 {
 		r := LeaseRequestDecoder(pkt)
+		open.lease = &Lease{
+			LeaseKey:      r.LeaseKey(),
+			LeaseState:    r.LeaseState(),
+			LeaseFlags:    r.LeaseFlags(),
+			LeaseDuration: r.LeaseDuration(),
+			Version:       1,
+		}
 		return &CreateContext{
 			Name: "RqLs",
 			Data: &LeaseResponse{
@@ -350,6 +357,15 @@ func (t *fileTree) handleRqLs(pkt []byte, open *Open) (Encoder, error) {
 	}
 
 	r := LeaseRequest2Decoder(pkt)
+	open.lease = &Lease{
+		LeaseKey:       r.LeaseKey(),
+		LeaseState:     r.LeaseState(),
+		LeaseFlags:     r.LeaseFlags(),
+		LeaseDuration:  r.LeaseDuration(),
+		ParentLeaseKey: r.ParentLeaseKey(),
+		Epoch:          r.Epoch(),
+		Version:        2,
+	}
 	return &CreateContext{
 		Name: "RqLs",
 		Data: &LeaseResponse2{
@@ -1952,11 +1968,89 @@ func (t *fileTree) setInfo(ctx *compoundContext, pkt []byte) error {
 }
 
 func (t *fileTree) oplockBreak(ctx *compoundContext, pkt []byte) error {
-	log.Errorf("OplockBreak")
 	c := t.session.conn
 
-	rsp := new(ErrorResponse)
-	PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+	res, err := accept(SMB2_OPLOCK_BREAK, pkt)
+	if err != nil {
+		return err
+	}
 
-	return c.sendPacket(rsp, &t.treeConn, ctx)
+	switch le.Uint16(res[:2]) {
+	case SMB2_OPLOCK_BREAK_ACK_SIZE:
+		r := OplockBreakAcknowledgmentDecoder(res)
+		if r.IsInvalid() {
+			return &InvalidRequestError{"broken oplock break ack format"}
+		}
+
+		fileID := r.FileId().Decode()
+		open := t.conn.serverCtx.getOpen(fileID.HandleId())
+		if open == nil || open.durableFileId != fileID.NodeId() {
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_FILE_CLOSED))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+		if open.oplockState != LOCKSTATE_BREAKING {
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_DEVICE_STATE))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+
+		open.oplockLevel = r.OplockLevel()
+		if open.oplockLevel == SMB2_OPLOCK_LEVEL_NONE {
+			open.oplockState = LOCKSTATE_NONE
+		} else {
+			open.oplockState = LOCKSTATE_HELD
+		}
+
+		rsp := &OplockBreakResponse{
+			OplockLevel: open.oplockLevel,
+			FileId:      fileID,
+		}
+		PrepareResponse(&rsp.PacketHeader, pkt, 0)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	case SMB2_LEASE_BREAK_ACK_SIZE:
+		r := LeaseBreakAcknowledgmentDecoder(res)
+		if r.IsInvalid() {
+			return &InvalidRequestError{"broken lease break ack format"}
+		}
+
+		var open *Open
+		t.conn.serverCtx.lock.Lock()
+		for _, candidate := range t.conn.serverCtx.opens {
+			if candidate.lease != nil && candidate.lease.LeaseKey == r.LeaseKey() {
+				open = candidate
+				break
+			}
+		}
+		t.conn.serverCtx.lock.Unlock()
+		if open == nil || open.lease == nil {
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_OBJECT_NAME_NOT_FOUND))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+		if !open.lease.Breaking {
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_UNSUCCESSFUL))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+
+		open.lease.LeaseState = r.LeaseState()
+		open.lease.Breaking = false
+		open.oplockState = LOCKSTATE_HELD
+		if open.lease.LeaseState == SMB2_LEASE_NONE {
+			open.oplockLevel = SMB2_OPLOCK_LEVEL_NONE
+			open.oplockState = LOCKSTATE_NONE
+		}
+
+		rsp := &LeaseBreakResponse{
+			LeaseKey:   open.lease.LeaseKey,
+			LeaseState: open.lease.LeaseState,
+		}
+		PrepareResponse(&rsp.PacketHeader, pkt, 0)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	default:
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
 }
