@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/macos-fuse-t/go-smb2/internal/crypto/ccm"
@@ -36,7 +37,7 @@ type Server struct {
 	serverGuid      Guid
 
 	listener net.Listener
-	active   bool
+	active   atomic.Bool
 
 	shares     map[string]vfs.VFSFileSystem
 	origShares map[string]vfs.VFSFileSystem
@@ -193,11 +194,13 @@ func (d *Server) Serve(addr string) error {
 		fmt.Fprintf(os.Stderr, "Error setting up listener: %v\n", err)
 		os.Exit(1)
 	}
+	d.lock.Lock()
 	d.listener = listener
+	d.lock.Unlock()
 	defer listener.Close()
-	d.active = true
+	d.active.Store(true)
 
-	for d.active {
+	for d.active.Load() {
 		// Accept a new connection.
 		c, err := listener.Accept()
 		if err != nil {
@@ -230,6 +233,7 @@ func (d *Server) Serve(addr string) error {
 			treeMapById:         make(map[uint32]treeOps),
 		}
 
+		d.lock.Lock()
 		log.Debugf("activeConn :%d, accept more: %v", len(d.activeConns), d.acceptSingleConn)
 		if len(d.activeConns) > 0 && d.acceptSingleConn {
 			accept := true
@@ -240,12 +244,14 @@ func (d *Server) Serve(addr string) error {
 				}
 			}
 			if !accept {
+				d.lock.Unlock()
 				conn.shutdown()
 				continue
 			}
 		}
 
 		d.activeConns[conn] = struct{}{}
+		d.lock.Unlock()
 		go conn.runReciever()
 		go conn.runSender()
 
@@ -254,7 +260,7 @@ func (d *Server) Serve(addr string) error {
 				log.Errorf("err: %v", err)
 				c.Close()
 				if d.acceptSingleConn && conn.serverState == STATE_SESSION_ACTIVE {
-					d.active = false
+					d.active.Store(false)
 					listener.Close()
 				}
 			}
@@ -262,7 +268,9 @@ func (d *Server) Serve(addr string) error {
 		// Handle the connection in a new goroutine.
 		go func() {
 			run()
+			d.lock.Lock()
 			delete(d.activeConns, conn)
+			d.lock.Unlock()
 		}()
 
 	}
@@ -270,9 +278,17 @@ func (d *Server) Serve(addr string) error {
 }
 
 func (d *Server) Shutdown() {
-	d.active = false
-	d.listener.Close()
+	d.active.Store(false)
+	d.lock.Lock()
+	if d.listener != nil {
+		d.listener.Close()
+	}
+	conns := make([]*conn, 0, len(d.activeConns))
 	for c := range d.activeConns {
+		conns = append(conns, c)
+	}
+	d.lock.Unlock()
+	for _, c := range conns {
 		c.shutdown()
 	}
 }
