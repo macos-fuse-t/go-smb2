@@ -122,8 +122,16 @@ type conn struct {
 
 func (conn *conn) shutdown() {
 	conn.cancel()
-	conn.wdone <- struct{}{}
-	conn.rdone <- struct{}{}
+	// Use non-blocking sends since shutdown may be called multiple
+	// times (from runReciever exit and from Server.Shutdown).
+	select {
+	case conn.wdone <- struct{}{}:
+	default:
+	}
+	select {
+	case conn.rdone <- struct{}{}:
+	default:
+	}
 	conn.t.Close()
 }
 
