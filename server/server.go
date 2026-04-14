@@ -230,6 +230,7 @@ func (d *Server) Serve(addr string) error {
 			treeMapById:         make(map[uint32]treeOps),
 		}
 
+		d.lock.Lock()
 		log.Debugf("activeConn :%d, accept more: %v", len(d.activeConns), d.acceptSingleConn)
 		if len(d.activeConns) > 0 && d.acceptSingleConn {
 			accept := true
@@ -240,12 +241,14 @@ func (d *Server) Serve(addr string) error {
 				}
 			}
 			if !accept {
+				d.lock.Unlock()
 				conn.shutdown()
 				continue
 			}
 		}
 
 		d.activeConns[conn] = struct{}{}
+		d.lock.Unlock()
 		go conn.runReciever()
 		go conn.runSender()
 
@@ -262,7 +265,9 @@ func (d *Server) Serve(addr string) error {
 		// Handle the connection in a new goroutine.
 		go func() {
 			run()
+			d.lock.Lock()
 			delete(d.activeConns, conn)
+			d.lock.Unlock()
 		}()
 
 	}
@@ -272,7 +277,13 @@ func (d *Server) Serve(addr string) error {
 func (d *Server) Shutdown() {
 	d.active = false
 	d.listener.Close()
+	d.lock.Lock()
+	conns := make([]*conn, 0, len(d.activeConns))
 	for c := range d.activeConns {
+		conns = append(conns, c)
+	}
+	d.lock.Unlock()
+	for _, c := range conns {
 		c.shutdown()
 	}
 }
