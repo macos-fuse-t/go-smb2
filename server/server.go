@@ -11,7 +11,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,8 +177,17 @@ func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFile
 	return srv
 }
 
+// Serve listens on the given address and serves SMB connections.
 func (d *Server) Serve(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+	return d.ServeListener(listener)
+}
 
+// ServeListener serves SMB connections on the given listener.
+func (d *Server) ServeListener(listener net.Listener) error {
 	_, err := rand.Read(d.serverGuid[:])
 	if err != nil {
 		log.Errorf("failed to generate server guid")
@@ -188,12 +196,6 @@ func (d *Server) Serve(addr string) error {
 	rand.Read(SRVSVC_GUID.Persistent[:])
 	rand.Read(SRVSVC_GUID.Volatile[:])
 
-	// Listen on TCP port 8080 on all available interfaces.
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error setting up listener: %v\n", err)
-		os.Exit(1)
-	}
 	d.lock.Lock()
 	d.listener = listener
 	d.lock.Unlock()
