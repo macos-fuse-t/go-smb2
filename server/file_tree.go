@@ -123,7 +123,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		if fileExists {
 			log.Debugf("Open: already exists: %s", r.Name())
 			rsp := new(ErrorResponse)
-			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_OBJECT_NAME_EXISTS))
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_OBJECT_NAME_COLLISION))
 			return c.sendPacket(rsp, &t.treeConn, ctx)
 		}
 
@@ -157,9 +157,13 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 	}
 
 	if err != nil {
-		log.Errorf("mkdir() failed")
+		status := STATUS_ACCESS_DENIED
+		if os.IsNotExist(err) {
+			status = STATUS_OBJECT_PATH_NOT_FOUND
+		}
+		log.Errorf("mkdir failed: %s, %v, status %x", name, err, status)
 		rsp := new(ErrorResponse)
-		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(status))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
@@ -181,7 +185,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 	access := r.DesiredAccess()
 	var h vfs.VfsHandle
 	if !isDir {
-		if access&(FILE_WRITE_DATA|GENERIC_WRITE) != 0 {
+		if access&(FILE_WRITE_DATA|FILE_APPEND_DATA|GENERIC_WRITE) != 0 {
 			flags |= os.O_RDWR
 		} else {
 			flags |= os.O_RDONLY
@@ -206,9 +210,13 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		attrs, err = t.fs.GetAttr(h)
 	}
 	if err != nil {
-		log.Errorf("open failed: %s, %v, co %x", name, err, r.CreateOptions())
+		status := STATUS_ACCESS_DENIED
+		if os.IsNotExist(err) {
+			status = STATUS_OBJECT_PATH_NOT_FOUND
+		}
+		log.Errorf("open failed: %s, %v, co %x, status %x", name, err, r.CreateOptions(), status)
 		rsp := new(ErrorResponse)
-		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(status))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
