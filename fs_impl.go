@@ -315,9 +315,9 @@ func (fs *PassthroughFS) OpenDir(p string) (vfs.VfsHandle, error) {
 	return h, nil
 }
 
-func (fs *PassthroughFS) readDir(open *OpenFile, pos int, maxEntries int) ([]vfs.DirInfo, error) {
+func (fs *PassthroughFS) readDir(open *OpenFile, flags int, maxEntries int) ([]vfs.DirInfo, error) {
 	var results []vfs.DirInfo
-	if pos != 0 {
+	if flags&vfs.ReadDirRestart != 0 {
 		open.f.Seek(0, 0)
 		open.dirPos = 0
 	}
@@ -359,8 +359,8 @@ func (fs *PassthroughFS) readDir(open *OpenFile, pos int, maxEntries int) ([]vfs
 	return results, nil
 }
 
-func (fs *PassthroughFS) ReadDir(handle vfs.VfsHandle, pos int, maxEntries int) ([]vfs.DirInfo, error) {
-	log.Debugf("ReadDir: %v, pos %d", handle, pos)
+func (fs *PassthroughFS) ReadDir(handle vfs.VfsHandle, flags int, maxEntries int) ([]vfs.DirInfo, error) {
+	log.Debugf("ReadDir: %v, flags %d", handle, flags)
 	if handle == 0 {
 		return nil, nil
 	}
@@ -372,7 +372,7 @@ func (fs *PassthroughFS) ReadDir(handle vfs.VfsHandle, pos int, maxEntries int) 
 	}
 	open := v.(*OpenFile)
 
-	return fs.readDir(open, pos, maxEntries)
+	return fs.readDir(open, flags, maxEntries)
 }
 
 func (fs *PassthroughFS) Readlink(handle vfs.VfsHandle) (string, error) {

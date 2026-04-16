@@ -16,6 +16,13 @@ type DirInfo struct {
 	Attributes
 }
 
+const (
+	// ReadDirContinue continues from the handle's current directory stream position.
+	ReadDirContinue = 0
+	// ReadDirRestart restarts enumeration from the beginning of the directory.
+	ReadDirRestart = 1
+)
+
 type VFSFileSystem interface {
 	GetAttr(VfsHandle) (*Attributes, error)
 	SetAttr(VfsHandle, *Attributes) (*Attributes, error)
@@ -40,7 +47,7 @@ type VFSFileSystem interface {
 	Write(VfsHandle, []byte, uint64, int) (int, error)
 
 	OpenDir(string) (VfsHandle, error)
-	ReadDir(VfsHandle, int, int) ([]DirInfo, error)
+	ReadDir(handle VfsHandle, flags int, maxEntries int) ([]DirInfo, error)
 
 	Readlink(VfsHandle) (string, error)
 

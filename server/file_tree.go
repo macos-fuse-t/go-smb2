@@ -1173,6 +1173,94 @@ func (t *fileTree) makeItem(class uint8, d vfs.DirInfo, parent *Open) Encoder {
 	return nil
 }
 
+const queryDirectoryReadBatchSize = 128
+
+func appendDirectoryInfo(out *FileInformationInfoResponse, item Encoder, maxSize int) bool {
+	if item.Size() > maxSize || out.Size()+item.Size() > maxSize {
+		return false
+	}
+
+	out.Items = append(out.Items, item)
+	return true
+}
+
+func (t *fileTree) appendDirectoryEntries(out *FileInformationInfoResponse, entries []vfs.DirInfo, pattern string, class uint8, open *Open, maxSize int, single bool) (stopped bool, full bool) {
+	for i, d := range entries {
+		if !MatchWildcard(d.Name, pattern) {
+			continue
+		}
+
+		info := t.makeItem(class, d, open)
+		if !appendDirectoryInfo(out, info, maxSize) {
+			open.queryDirectoryPending = append(open.queryDirectoryPending, entries[i:]...)
+			return true, true
+		}
+
+		if single || out.Size() >= maxSize {
+			open.queryDirectoryPending = append(open.queryDirectoryPending, entries[i+1:]...)
+			return true, false
+		}
+	}
+
+	return false, false
+}
+
+func queryDirectoryAppendStatus(out *FileInformationInfoResponse, full bool) (uint32, bool) {
+	if len(out.Items) != 0 {
+		return 0, true
+	}
+	if full {
+		return uint32(STATUS_BUFFER_TOO_SMALL), true
+	}
+	return 0, false
+}
+
+func (t *fileTree) queryDirectoryWildcard(out *FileInformationInfoResponse, open *Open, handle vfs.VfsHandle, pattern string, class uint8, flags uint8, maxOutputSize int, readDirFlags int) uint32 {
+	maxReadEntries := queryDirectoryReadBatchSize
+	single := flags&RETURN_SINGLE_ENTRY != 0
+	if single {
+		maxReadEntries = 1
+	}
+
+	if len(open.queryDirectoryPending) > 0 {
+		pending := open.queryDirectoryPending
+		open.queryDirectoryPending = nil
+		_, full := t.appendDirectoryEntries(out, pending, pattern, class, open, maxOutputSize, single)
+		if status, done := queryDirectoryAppendStatus(out, full); done {
+			return status
+		}
+	}
+
+	for {
+		dir, err := t.fs.ReadDir(handle, readDirFlags, maxReadEntries)
+		readDirFlags = vfs.ReadDirContinue
+		if err != nil {
+			if len(out.Items) != 0 {
+				return 0
+			}
+			if err == io.EOF {
+				return uint32(STATUS_NO_MORE_FILES)
+			}
+			log.Errorf("queryDirectory: err %v", err)
+			return uint32(STATUS_ACCESS_DENIED)
+		}
+		if len(dir) == 0 {
+			if len(out.Items) != 0 {
+				return 0
+			}
+			return uint32(STATUS_NO_MORE_FILES)
+		}
+
+		stopped, full := t.appendDirectoryEntries(out, dir, pattern, class, open, maxOutputSize, single)
+		if status, done := queryDirectoryAppendStatus(out, full); done {
+			return status
+		}
+		if stopped {
+			return uint32(STATUS_NO_SUCH_FILE)
+		}
+	}
+}
+
 func (t *fileTree) queryDirectory(ctx *compoundContext, pkt []byte) error {
 	log.Debugf("QueryDirectory")
 
@@ -1207,18 +1295,29 @@ func (t *fileTree) queryDirectory(ctx *compoundContext, pkt []byte) error {
 	}
 
 	out := &FileInformationInfoResponse{}
+	maxOutputSize := int(r.OutputBufferLength())
 	Status := uint32(0)
 	if ctx != nil && ctx.lastStatus != 0 {
 		Status = ctx.lastStatus
 	}
 
 	open := t.conn.serverCtx.getOpen(fileId.HandleId())
-	pos := 0
-	if r.Flags()&RESTART_SCANS != 0 {
-		pos = 1
+	if open == nil {
+		log.Errorf("queryDirectory: open not found: %d", fileId.HandleId())
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+	readDirFlags := vfs.ReadDirContinue
+	if r.Flags()&(RESTART_SCANS|REOPEN) != 0 {
+		readDirFlags = vfs.ReadDirRestart
+		open.queryDirectoryPending = nil
 	}
 
 	name := r.FileName()
+	if maxOutputSize <= 0 {
+		Status = uint32(STATUS_BUFFER_TOO_SMALL)
+	}
 	if Status == 0 {
 		Status = uint32(STATUS_NO_SUCH_FILE)
 
@@ -1227,31 +1326,14 @@ func (t *fileTree) queryDirectory(ctx *compoundContext, pkt []byte) error {
 				log.Debugf("lookup %s success", name)
 				d := vfs.DirInfo{Name: name, Attributes: *attrs}
 				info := t.makeItem(r.FileInfoClass(), d, open)
-				out.Items = append(out.Items, info)
-				Status = 0
+				if appendDirectoryInfo(out, info, maxOutputSize) {
+					Status = 0
+				} else {
+					Status = uint32(STATUS_BUFFER_TOO_SMALL)
+				}
 			}
 		} else {
-			dir, err := t.fs.ReadDir(vfs.VfsHandle(fileId.HandleId()), pos, 1000)
-			if err == nil {
-				for _, d := range dir {
-					if MatchWildcard(d.Name, r.FileName()) {
-						info := t.makeItem(r.FileInfoClass(), d, open)
-						out.Items = append(out.Items, info)
-						Status = 0
-
-						if r.Flags()&RETURN_SINGLE_ENTRY != 0 {
-							break
-						}
-					}
-				}
-			} else {
-				if err == io.EOF {
-					Status = uint32(STATUS_NO_MORE_FILES)
-				} else {
-					log.Errorf("queryDirectory: err %v", err)
-					Status = uint32(STATUS_ACCESS_DENIED)
-				}
-			}
+			Status = t.queryDirectoryWildcard(out, open, vfs.VfsHandle(fileId.HandleId()), name, r.FileInfoClass(), r.Flags(), maxOutputSize, readDirFlags)
 		}
 	} else {
 		out = nil
@@ -1788,7 +1870,7 @@ func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open
 	}
 
 	if attrs.GetFileType() == vfs.FileTypeDirectory {
-		if dir, err := t.fs.ReadDir(vfs.VfsHandle(fileId.HandleId()), 0, 1000); err == nil {
+		if dir, err := t.fs.ReadDir(vfs.VfsHandle(fileId.HandleId()), vfs.ReadDirContinue, 1000); err == nil {
 			isEmpty := true
 			for _, d := range dir {
 				if d.Name != "." && d.Name != ".." {

@@ -99,6 +99,7 @@ type Open struct {
 	lockSequenceArray           [64]byte
 	notifyReq                   []byte
 	notifyReqAsyncId            uint64
+	queryDirectoryPending       []vfs.DirInfo
 	isEa                        bool
 	eaKey                       string
 	isSymlink                   bool
