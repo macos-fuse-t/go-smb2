@@ -39,10 +39,10 @@ func (hdr *PacketHeader) encodeHeader(pkt []byte) {
 	p.SetMessageId(hdr.MessageId)
 
 	switch {
-	case hdr.TreeId != 0:
-		p.SetTreeId(hdr.TreeId)
 	case hdr.AsyncId != 0:
 		p.SetAsyncId(hdr.AsyncId)
+	case hdr.TreeId != 0:
+		p.SetTreeId(hdr.TreeId)
 	}
 
 	p.SetSessionId(hdr.SessionId)
