@@ -208,15 +208,17 @@ type FileFullEaInformationInfo struct {
 }
 
 type FileIdInformationInfo struct {
-	FileId int64
+	VolumeSerialNumber uint64
+	FileId             FileId
 }
 
 func (i *FileIdInformationInfo) Size() int {
-	return 8
+	return 24
 }
 
 func (i *FileIdInformationInfo) Encode(pkt []byte) {
-	le.PutUint64(pkt[:], uint64(i.FileId))
+	le.PutUint64(pkt[:], i.VolumeSerialNumber)
+	i.FileId.Encode(pkt[8:])
 }
 
 type FileInternalInformationInfo struct {

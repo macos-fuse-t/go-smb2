@@ -41,8 +41,9 @@ type Server struct {
 	shares     map[string]vfs.VFSFileSystem
 	origShares map[string]vfs.VFSFileSystem
 
-	opens       map[uint64]*Open
-	opensByGuid map[Guid]*Open
+	opens         map[uint64]*Open
+	opensByGuid   map[Guid]*Open
+	deletePending map[uint64]bool
 
 	allowGuest bool
 
@@ -88,7 +89,7 @@ type Open struct {
 	fileName                    string
 	resumeKey                   [24]byte
 	createOptions               uint32
-	deleteAfterClose            bool
+	deleteOnClose               bool
 	createDisposition           uint32
 	fileAttributes              uint32
 	clientGuid                  Guid
@@ -167,6 +168,7 @@ func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFile
 		shares:           newShares,
 		origShares:       shares,
 		opens:            map[uint64]*Open{},
+		deletePending:    map[uint64]bool{},
 		allowGuest:       cfg.AllowGuest,
 		maxIOReads:       cfg.MaxIOReads,
 		maxIOWrites:      cfg.MaxIOWrites,
@@ -1019,6 +1021,51 @@ func (d *Server) deleteOpen(fileId uint64) {
 			delete(d.opensByGuid, open.createGuid)
 		}
 	}
+}
+
+func (d *Server) setDeletePending(node uint64, pending bool) {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	if pending {
+		d.deletePending[node] = true
+	} else {
+		delete(d.deletePending, node)
+	}
+}
+
+func (d *Server) isDeletePending(node uint64) bool {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	return d.deletePending[node]
+}
+
+func (d *Server) closeOpen(open *Open) bool {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+
+	if open.deleteOnClose {
+		d.deletePending[open.durableFileId] = true
+	}
+
+	delete(d.opens, open.fileId)
+	if open.isDurable {
+		delete(d.opensByGuid, open.createGuid)
+	}
+
+	if !d.deletePending[open.durableFileId] {
+		return false
+	}
+
+	for _, other := range d.opens {
+		if other.durableFileId == open.durableFileId {
+			return false
+		}
+	}
+
+	delete(d.deletePending, open.durableFileId)
+	return true
 }
 
 func (d *Server) BreakNode(node uint64) {

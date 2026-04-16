@@ -82,6 +82,13 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 	isSymlink := fileExists && (attrs.GetFileType() == vfs.FileTypeSymlink) && (r.CreateOptions()&FILE_OPEN_REPARSE_POINT == 0)
 	d := r.CreateDisposition()
 
+	if fileExists && t.conn.serverCtx.isDeletePending(attrs.GetInodeNumber()) {
+		log.Debugf("Open: delete pending: %s", r.Name())
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_DELETE_PENDING))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
 	if fileExists && !isDir && createDir {
 		status := STATUS_OBJECT_NAME_COLLISION
 		if d != FILE_CREATE {
@@ -195,7 +202,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 			flags = 0
 		}
 
-		if r.CreateOptions()&FILE_OPEN_REPARSE_POINT != 0 {
+		if fileExists && attrs.GetFileType() == vfs.FileTypeSymlink && r.CreateOptions()&FILE_OPEN_REPARSE_POINT != 0 {
 			flags |= 0x200000 // O_SYMLINK, O_PATH
 		}
 
@@ -265,7 +272,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		isEa:              isEA,
 		eaKey:             eaKey,
 		isSymlink:         isSymlink,
-		deleteAfterClose:  (r.CreateOptions()&FILE_DELETE_ON_CLOSE != 0),
+		deleteOnClose:     (r.CreateOptions()&FILE_DELETE_ON_CLOSE != 0),
 	}
 
 	cc := r.CreateContexts()
@@ -528,13 +535,13 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 		rsp.FileAttributes = PermissionsFromVfs(a, open.pathName)
 	}
 send:
-	if open != nil && open.deleteAfterClose {
+	deletePending := open != nil && t.conn.serverCtx.closeOpen(open)
+	if deletePending {
 		if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
 			log.Errorf("Delete failed: %v", err)
 		}
 	}
 
-	t.conn.serverCtx.deleteOpen(fileId.HandleId())
 	t.fs.Close(vfs.VfsHandle(fileId.HandleId()))
 
 	c.sendPacket(rsp, &t.treeConn, ctx)
@@ -1572,6 +1579,11 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 		isDir = 1
 	}
 
+	deletePending := byte(0)
+	if t.conn.serverCtx.isDeletePending(open.durableFileId) {
+		deletePending = 1
+	}
+
 	var info Encoder
 	switch r.FileInfoClass() {
 	case FileAllInformation:
@@ -1586,6 +1598,8 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 			StandardInformation: FileStandardInformationInfo{
 				EndOfFile:      int64(SizeFromVfs(a)),
 				AllocationSize: int64(DiskSizeFromVfs(a)),
+				NumberOfLinks:  1,
+				DeletePending:  deletePending,
 				Directory:      isDir,
 			},
 			Internal: FileInternalInformationInfo{
@@ -1603,6 +1617,14 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 			NameInformation: FileAlternateNameInformationInfo{
 				FileName: strings.ReplaceAll(name, "/", "\\"),
 			},
+		}
+	case FileStandardInformation:
+		info = &FileStandardInformationInfo{
+			EndOfFile:      int64(SizeFromVfs(a)),
+			AllocationSize: int64(DiskSizeFromVfs(a)),
+			NumberOfLinks:  1,
+			DeletePending:  deletePending,
+			Directory:      isDir,
 		}
 	case FileEaInformation:
 		info = &FileEaInformationInfo{}
@@ -1663,6 +1685,22 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 	case FileInternalInformation:
 		info = &FileInternalInformationInfo{
 			int64(a.GetInodeNumber()),
+		}
+	case FileIdInformation:
+		fileId := FileId{}
+		fileId.SetNodeId(a.GetInodeNumber())
+
+		rootAttr, err := t.fs.GetAttr(0)
+		if err != nil {
+			log.Errorf("queryInfoFile: root GetAttr() failed")
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+
+		info = &FileIdInformationInfo{
+			VolumeSerialNumber: rootAttr.GetInodeNumber(),
+			FileId:             fileId,
 		}
 	default:
 		log.Error("unsupported type")
@@ -1866,8 +1904,28 @@ func (t *fileTree) setEndOfFileInfoEa(ctx *compoundContext, fileId *FileId, eaKe
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
 
+func dispositionDeletePending(pkt []byte) bool {
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+	buf := r.Buffer()
+	return len(buf) > 0 && FileDispositionInformationInfoDecoder(buf).DeletePending() != 0
+}
+
 func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open *Open, pkt []byte) error {
 	c := t.session.conn
+
+	if !dispositionDeletePending(pkt) {
+		t.conn.serverCtx.setDeletePending(open.durableFileId, false)
+		rsp := new(SetInfoResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, 0)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	if open.grantedAccess&DELETE == 0 {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
 
 	attrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 	if err != nil {
@@ -1894,7 +1952,7 @@ func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open
 			}
 		}
 	}
-	open.deleteAfterClose = true
+	t.conn.serverCtx.setDeletePending(open.durableFileId, true)
 
 	rsp := new(SetInfoResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
@@ -1904,11 +1962,13 @@ func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open
 func (t *fileTree) setDispositionInfoEa(ctx *compoundContext, fileId *FileId, eaKey string, pkt []byte) error {
 	c := t.session.conn
 
-	if err := t.fs.Removexattr(vfs.VfsHandle(fileId.HandleId()), eaKey); err != nil {
-		log.Errorf("removexattr failed: %v", err)
-		rsp := new(ErrorResponse)
-		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_FOUND))
-		return c.sendPacket(rsp, &t.treeConn, ctx)
+	if dispositionDeletePending(pkt) {
+		if err := t.fs.Removexattr(vfs.VfsHandle(fileId.HandleId()), eaKey); err != nil {
+			log.Errorf("removexattr failed: %v", err)
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_FOUND))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
 	}
 
 	rsp := new(SetInfoResponse)
