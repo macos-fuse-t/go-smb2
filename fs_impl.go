@@ -9,14 +9,12 @@ import (
 	"path"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/macos-fuse-t/go-smb2/stats"
 	"github.com/macos-fuse-t/go-smb2/vfs"
 	"github.com/pkg/xattr"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 type OpenFile struct {
@@ -107,21 +105,7 @@ func (fs *PassthroughFS) SetAttr(handle vfs.VfsHandle, a *vfs.Attributes) (*vfs.
 }
 
 func (fs *PassthroughFS) StatFS(handle vfs.VfsHandle) (*vfs.FSAttributes, error) {
-	var statfs unix.Statfs_t
-	if err := unix.Statfs(fs.rootPath, &statfs); err != nil {
-		log.Errorf("statfs")
-		return nil, err
-	}
-
-	a := vfs.FSAttributes{}
-	a.SetAvailableBlocks(statfs.Bavail)
-	a.SetBlockSize(uint64(statfs.Bsize))
-	a.SetBlocks(statfs.Bavail)
-	a.SetFiles(statfs.Files)
-	a.SetFreeBlocks(statfs.Bfree)
-	a.SetFreeFiles(statfs.Ffree)
-	a.SetIOSize(uint64(statfs.Bsize))
-	return &a, nil
+	return statFS(fs.rootPath)
 }
 
 func (fs *PassthroughFS) FSync(handle vfs.VfsHandle) error {
@@ -162,10 +146,7 @@ func (fs *PassthroughFS) Open(p string, flags int, mode int) (vfs.VfsHandle, err
 	var f *os.File
 	var err error
 	if flags&0x200000 != 0 {
-		// O_SYMLINK, O_PATH
-		var fd int
-		fd, err = syscall.Open(p, 0x200000, 0)
-		f = os.NewFile(uintptr(fd), p)
+		f, err = openSymlink(p)
 	} else {
 		f, err = os.OpenFile(p, flags, os.FileMode(mode))
 	}
