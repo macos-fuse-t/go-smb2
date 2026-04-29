@@ -236,6 +236,7 @@ func (d *Server) ServeListener(listener net.Listener) error {
 			hashId:              SHA512,
 			treeMapByName:       make(map[string]treeOps),
 			treeMapById:         make(map[uint32]treeOps),
+			sessions:            make(map[uint64]*session),
 		}
 
 		d.lock.Lock()
@@ -300,14 +301,17 @@ func (d *Server) Shutdown() {
 
 func (c *conn) Run() error {
 	for {
-		pkt, compCtx, err := c.srvRecv()
+		pkt, reqSession, compCtx, err := c.srvRecv()
 		if err != nil {
 			return err
+		}
+		if reqSession != nil {
+			c.session = reqSession
 		}
 
 		p := PacketCodec(pkt)
 		if p.Flags()&SMB2_FLAGS_ASYNC_COMMAND != 0 {
-			log.Errorf("Async command!!!!")
+			log.Debugf("Async command %d", p.Command())
 		}
 
 		switch p.Command() {
@@ -323,6 +327,8 @@ func (c *conn) Run() error {
 			err = c.treeDisconnect(pkt)
 		case SMB2_ECHO:
 			err = c.echo(compCtx, pkt)
+		case SMB2_CANCEL:
+			err = nil
 		default:
 			p := PacketCodec(pkt)
 			tc, ok := c.treeMapById[p.TreeId()]
@@ -984,7 +990,7 @@ func (c *conn) sessionServerSetupChallenge(pkt []byte) error {
 
 	// We set session before sending packet just for setting hdr.SessionId.
 	// But, we should not permit access from receiver until the session information is completed.
-	c.session = s
+	c.registerSession(s)
 
 	c.serverState = STATE_SESSION_ACTIVE
 	if err = c.sendPacket(rsp, nil, nil); err == nil {

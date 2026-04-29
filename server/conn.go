@@ -16,6 +16,7 @@ type requestResponse struct {
 	msgId         uint64
 	creditRequest uint16
 	pkt           []byte // request packet
+	session       *session
 	compCtx       *compoundContext
 	ctx           context.Context
 	recv          chan []byte
@@ -44,13 +45,13 @@ func (r *outstandingRequests) set(msgId uint64, rr *requestResponse) {
 	r.s <- msgId
 }
 
-func (r *outstandingRequests) pop(ctx context.Context) ([]byte, *compoundContext, error) {
+func (r *outstandingRequests) pop(ctx context.Context) ([]byte, *session, *compoundContext, error) {
 	var msgId uint64
 
 again:
 	select {
 	case <-ctx.Done():
-		return nil, nil, &ContextError{Err: ctx.Err()}
+		return nil, nil, nil, &ContextError{Err: ctx.Err()}
 	case msgId = <-r.s:
 		break
 	}
@@ -64,7 +65,7 @@ again:
 		// Cancel message
 		goto again
 	}
-	return rr.pkt, rr.compCtx, nil
+	return rr.pkt, rr.session, rr.compCtx, nil
 }
 
 func (r *outstandingRequests) shutdown(err error) {
@@ -81,6 +82,7 @@ type conn struct {
 	t transport
 
 	session                   *session
+	sessions                  map[uint64]*session
 	outstandingRequests       *outstandingRequests
 	sequenceWindow            uint64
 	dialect                   uint16
@@ -147,6 +149,18 @@ func (conn *conn) resetSession() {
 	atomic.StoreInt32(&conn._useSession, 0)
 }
 
+func (conn *conn) registerSession(s *session) {
+	conn.sessions[s.sessionId] = s
+	conn.session = s
+}
+
+func (conn *conn) lookupSession(sessionId uint64) *session {
+	if conn.session != nil && conn.session.sessionId == sessionId {
+		return conn.session
+	}
+	return conn.sessions[sessionId]
+}
+
 func (conn *conn) encodePacket(req Packet, tc *treeConn, ctx context.Context) ([]byte, error) {
 	var err error
 	hdr := req.Header()
@@ -194,7 +208,7 @@ func (conn *conn) encodePacket(req Packet, tc *treeConn, ctx context.Context) ([
 	return pkt, nil
 }
 
-func (conn *conn) srvRecv() ([]byte, *compoundContext, error) {
+func (conn *conn) srvRecv() ([]byte, *session, *compoundContext, error) {
 	return conn.outstandingRequests.pop(conn.ctx)
 }
 
@@ -233,11 +247,12 @@ func (conn *conn) runReciever() {
 		}
 
 		hasSession := conn.useSession()
+		var reqSession *session
 
 		var isEncrypted bool
 
 		if hasSession {
-			pkt, e, isEncrypted = conn.tryDecrypt(pkt)
+			pkt, reqSession, e, isEncrypted = conn.tryDecrypt(pkt)
 			if e != nil {
 				log.Warning("skip:", e)
 
@@ -245,7 +260,16 @@ func (conn *conn) runReciever() {
 			}
 
 			p := PacketCodec(pkt)
-			if s := conn.session; s != nil {
+			if reqSession == nil {
+				reqSession = conn.lookupSession(p.SessionId())
+			}
+			switch {
+			case reqSession == nil && p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP:
+				log.Warning("skip:", &InvalidResponseError{"unknown session id"})
+				log.Errorf("Session!!!: msg %d, %d %d", p.Command(), uint64(0), p.SessionId())
+				continue
+			case reqSession != nil:
+				s := reqSession
 				if p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP &&
 					s.sessionId != p.SessionId() {
 					log.Warning("skip:", &InvalidResponseError{"unknown session id"})
@@ -292,13 +316,13 @@ func (conn *conn) runReciever() {
 			}
 
 			if hasSession {
-				e = conn.tryVerify(pkt, isEncrypted)
+				e = conn.tryVerify(pkt, reqSession, isEncrypted)
 				if e != nil {
 					log.Errorf("verify error: %v", err)
 				}
 			}
 
-			e = conn.tryHandle(pkt, compCtx, e)
+			e = conn.tryHandle(pkt, reqSession, compCtx, e)
 			if e != nil {
 				log.Warningln("skip:", e)
 			}
@@ -414,52 +438,53 @@ func acceptError(status uint32, res []byte) error {
 	return &ResponseError{Code: status, data: [][]byte{eData}}
 }
 
-func (conn *conn) tryDecrypt(pkt []byte) ([]byte, error, bool) {
+func (conn *conn) tryDecrypt(pkt []byte) ([]byte, *session, error, bool) {
 	p := PacketCodec(pkt)
 	if p.IsInvalid() {
 		t := TransformCodec(pkt)
 		if t.IsInvalid() {
-			return nil, &InvalidResponseError{"broken packet header format"}, false
+			return nil, nil, &InvalidResponseError{"broken packet header format"}, false
 		}
 
 		if t.Flags() != Encrypted {
-			return nil, &InvalidResponseError{"encrypted flag is not on"}, false
+			return nil, nil, &InvalidResponseError{"encrypted flag is not on"}, false
 		}
 
-		if conn.session == nil || conn.session.sessionId != t.SessionId() {
-			return nil, &InvalidResponseError{"unknown session id returned"}, false
+		s := conn.lookupSession(t.SessionId())
+		if s == nil {
+			return nil, nil, &InvalidResponseError{"unknown session id returned"}, false
 		}
 
-		pkt, err := conn.session.decrypt(pkt)
+		pkt, err := s.decrypt(pkt)
 		if err != nil {
-			return nil, &InvalidResponseError{err.Error()}, false
+			return nil, nil, &InvalidResponseError{err.Error()}, false
 		}
 
-		return pkt, nil, true
+		return pkt, s, nil, true
 	}
 
-	return pkt, nil, false
+	return pkt, nil, nil, false
 }
 
-func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
+func (conn *conn) tryVerify(pkt []byte, s *session, isEncrypted bool) error {
 	p := PacketCodec(pkt)
 
 	msgId := p.MessageId()
 
 	if msgId != 0xFFFFFFFFFFFFFFFF {
 		if p.Flags()&SMB2_FLAGS_SIGNED != 0 {
-			if conn.session == nil || conn.session.sessionId != p.SessionId() {
+			if s == nil || s.sessionId != p.SessionId() {
 				return &InvalidResponseError{"unknown session id returned"}
 			} else {
-				if !conn.session.verify(pkt) {
+				if !s.verify(pkt) {
 					return &InvalidResponseError{"unverified packet returned"}
 				}
 			}
 		} else {
 			if conn.requireSigning && !isEncrypted {
-				if conn.session != nil {
-					if conn.session.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL) == 0 {
-						if conn.session.sessionId == p.SessionId() {
+				if s != nil {
+					if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL) == 0 {
+						if s.sessionId == p.SessionId() {
 							return &InvalidResponseError{"signing required"}
 						}
 					}
@@ -471,7 +496,7 @@ func (conn *conn) tryVerify(pkt []byte, isEncrypted bool) error {
 	return nil
 }
 
-func (conn *conn) tryHandle(pkt []byte, compCtx *compoundContext, e error) error {
+func (conn *conn) tryHandle(pkt []byte, s *session, compCtx *compoundContext, e error) error {
 	p := PacketCodec(pkt)
 
 	msgId := p.MessageId()
@@ -480,6 +505,7 @@ func (conn *conn) tryHandle(pkt []byte, compCtx *compoundContext, e error) error
 		msgId:         msgId,
 		creditRequest: p.CreditRequest(),
 		pkt:           pkt,
+		session:       s,
 		ctx:           conn.ctx,
 		recv:          make(chan []byte, 1),
 		compCtx:       compCtx,
