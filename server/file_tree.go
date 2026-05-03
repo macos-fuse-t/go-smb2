@@ -1460,6 +1460,10 @@ func (t *fileTree) queryInfoFileSystem(ctx *compoundContext, pkt []byte) error {
 	if b, ok := s.GetBlockSize(); ok {
 		bs = uint32(b)
 	}
+	physicalSectorSize := bs
+	if physicalSectorSize < 512 {
+		physicalSectorSize = 512
+	}
 	au := int64(-1)
 	if val, ok := s.GetAvailableBlocks(); ok {
 		au = int64(val)
@@ -1511,6 +1515,16 @@ func (t *fileTree) queryInfoFileSystem(ctx *compoundContext, pkt []byte) error {
 			ActualAvailableAllocationUnits: au,
 			SectorsPerAllocationUnit:       bs / 512,
 			BytesPerSector:                 512,
+		}
+	case FileFsSectorSizeInformation:
+		info = &FileFsSectorSizeInformationInfo{
+			LogicalBytesPerSector:                                 512,
+			PhysicalBytesPerSectorForAtomicity:                    physicalSectorSize,
+			PhysicalBytesPerSectorForPerformance:                  physicalSectorSize,
+			FileSystemEffectivePhysicalBytesPerSectorForAtomicity: physicalSectorSize,
+			Flags: SSINFO_FLAGS_ALIGNED_DEVICE |
+				SSINFO_FLAGS_PARTITION_ALIGNED_ON_DEVICE |
+				SSINFO_FLAGS_NO_SEEK_PENALTY,
 		}
 	case FileFsObjectIdInformation:
 		fileId := r.FileId().Decode()

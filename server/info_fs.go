@@ -483,6 +483,28 @@ type FileFsSectorSizeInformationInfo struct {
 	ByteOffsetForPartitionAlignment                       uint32
 }
 
+const (
+	SSINFO_FLAGS_ALIGNED_DEVICE              = 0x00000001
+	SSINFO_FLAGS_PARTITION_ALIGNED_ON_DEVICE = 0x00000002
+	SSINFO_FLAGS_NO_SEEK_PENALTY             = 0x00000004
+	SSINFO_FLAGS_TRIM_ENABLED                = 0x00000008
+	SSINFO_FLAGS_BYTE_ADDRESSABLE            = 0x00000010
+)
+
+func (i *FileFsSectorSizeInformationInfo) Size() int {
+	return 28
+}
+
+func (i *FileFsSectorSizeInformationInfo) Encode(pkt []byte) {
+	le.PutUint32(pkt[0:], i.LogicalBytesPerSector)
+	le.PutUint32(pkt[4:], i.PhysicalBytesPerSectorForAtomicity)
+	le.PutUint32(pkt[8:], i.PhysicalBytesPerSectorForPerformance)
+	le.PutUint32(pkt[12:], i.FileSystemEffectivePhysicalBytesPerSectorForAtomicity)
+	le.PutUint32(pkt[16:], i.Flags)
+	le.PutUint32(pkt[20:], i.ByteOffsetForSectorAlignment)
+	le.PutUint32(pkt[24:], i.ByteOffsetForPartitionAlignment)
+}
+
 type FileFsSizeInformationInfo struct {
 	TotalAllocationUnits     int64
 	AvailableAllocationUnits int64
