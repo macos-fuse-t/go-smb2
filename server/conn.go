@@ -9,7 +9,6 @@ import (
 
 	. "github.com/macos-fuse-t/go-smb2/internal/erref"
 	. "github.com/macos-fuse-t/go-smb2/internal/smb2"
-	log "github.com/sirupsen/logrus"
 )
 
 type requestResponse struct {
