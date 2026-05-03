@@ -9,8 +9,10 @@ import (
 const (
 	clientCapabilities = SMB2_GLOBAL_CAP_LARGE_MTU | SMB2_GLOBAL_CAP_ENCRYPTION
 
+	// TODO: Re-enable SMB2_GLOBAL_CAP_LEASING and SMB2_GLOBAL_CAP_DIRECTORY_LEASING
+	// after full SMB2 lease and directory lease behavior is implemented.
 	serverCapabilities = SMB2_GLOBAL_CAP_LARGE_MTU | SMB2_GLOBAL_CAP_ENCRYPTION |
-		SMB2_GLOBAL_CAP_DFS | SMB2_GLOBAL_CAP_LEASING | SMB2_GLOBAL_CAP_DIRECTORY_LEASING |
+		SMB2_GLOBAL_CAP_DFS |
 		SMB2_GLOBAL_CAP_PERSISTENT_HANDLES
 	serverMaxTransactSize = 0x800000
 	serverMaxReadSize     = 0x800000

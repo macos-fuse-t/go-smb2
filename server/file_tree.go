@@ -948,6 +948,27 @@ func (t *fileTree) handleCreateOrGetObjectId(ctx *compoundContext, pkt []byte) e
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
 
+func (t *fileTree) handleQueryNetworkInterfaceInfo(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_IOCTL, pkt)
+	r := IoctlRequestDecoder(res)
+
+	rsp := new(IoctlResponse)
+	rsp.CtlCode = FSCTL_QUERY_NETWORK_INTERFACE_INFO
+	rsp.FileId = r.FileId().Decode()
+	rsp.Output = NetworkInterfaceInfoList{
+		{
+			IfIndex:   1,
+			LinkSpeed: 1_000_000_000,
+			IPv4:      [4]byte{127, 0, 0, 1},
+		},
+	}
+
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
 func (t *fileTree) ioctl(ctx *compoundContext, pkt []byte) error {
 	log.Debugf("Ioctl")
 
@@ -965,6 +986,8 @@ func (t *fileTree) ioctl(ctx *compoundContext, pkt []byte) error {
 		return t.handleDeleteReparsePointReq(ctx, pkt)
 	case FSCTL_CREATE_OR_GET_OBJECT_ID:
 		return t.handleCreateOrGetObjectId(ctx, pkt)
+	case FSCTL_QUERY_NETWORK_INTERFACE_INFO:
+		return t.handleQueryNetworkInterfaceInfo(ctx, pkt)
 	}
 
 	log.Errorf("ioctl: code %d", r.CtlCode())
@@ -1599,6 +1622,22 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 
 	var info Encoder
 	switch r.FileInfoClass() {
+	case FileBasicInformation:
+		info = &FileBasicInformationInfo{
+			CreationTime:   *BirthTimeFromVfs(a),
+			LastAccessTime: *AccessTimeFromVfs(a),
+			LastWriteTime:  *ModifiedTimeFromVfs(a),
+			ChangeTime:     *ChangeTimeFromVfs(a),
+			FileAttributes: PermissionsFromVfs(a, open.pathName),
+		}
+	case FileAccessInformation:
+		info = &FileAccessInformationInfo{
+			AccessFlags: MaxAccessFromVfs(a),
+		}
+	case FileNameInformation:
+		info = &FileAlternateNameInformationInfo{
+			FileName: strings.ReplaceAll(name, "/", "\\"),
+		}
 	case FileAllInformation:
 		info = &FileAllInformationInfo{
 			BasicInformation: FileBasicInformationInfo{
@@ -1641,6 +1680,16 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 		}
 	case FileEaInformation:
 		info = &FileEaInformationInfo{}
+	case FileFullEaInformation:
+		info = FileFullEaInformationInfoItems{}
+	case FilePositionInformation:
+		info = &FilePositionInformationInfo{}
+	case FileModeInformation:
+		info = &FileModeInformationInfo{
+			Mode: FILE_SYNCHRONOUS_IO_ALERT,
+		}
+	case FileAlignmentInformation:
+		info = &FileAlignmentInformationInfo{}
 	case FileStreamInformation:
 		xattrs, err := t.fs.Listxattr(vfs.VfsHandle(fileId.HandleId()))
 		items := FileStreamInformationInfoItems{}
@@ -1691,10 +1740,18 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 				FileAttributes: 0,
 			}
 		}
+	case FileCompressionInformation:
+		info = &FileCompressionInformationInfo{
+			CompressedFileSize: int64(DiskSizeFromVfs(a)),
+		}
 	case FileNormalizedNameInformation:
 		rsp := new(ErrorResponse)
 		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
+	case FileAttributeTagInformation:
+		info = &FileAttributeTagInformationInfo{
+			FileAttributes: PermissionsFromVfs(a, open.pathName),
+		}
 	case FileInternalInformation:
 		info = &FileInternalInformationInfo{
 			int64(a.GetInodeNumber()),
@@ -1716,7 +1773,7 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 			FileId:             fileId,
 		}
 	default:
-		log.Error("unsupported type")
+		log.Errorf("queryInfoFile: unsupported type %d", r.FileInfoClass())
 		return &InvalidRequestError{"unsupported query class"}
 	}
 

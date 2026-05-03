@@ -793,12 +793,7 @@ func (n *ServerNegotiator) makeResponse(conn *conn) (*NegotiateResponse, error) 
 				Ciphers: []uint16{conn.cipherId},
 			}
 
-			crc := &CompressionContext{
-				Compressions: []uint16{0},
-				Flags:        0,
-			}
-
-			rsp.Contexts = append(rsp.Contexts, hc, cc, crc)
+			rsp.Contexts = append(rsp.Contexts, hc, cc)
 		default:
 			return nil, &InternalError{"unsupported dialect specified"}
 		}

@@ -135,6 +135,15 @@ type FileAttributeTagInformationInfo struct {
 	ReparseTag     uint32
 }
 
+func (i *FileAttributeTagInformationInfo) Size() int {
+	return 8
+}
+
+func (i *FileAttributeTagInformationInfo) Encode(pkt []byte) {
+	le.PutUint32(pkt[:], i.FileAttributes)
+	le.PutUint32(pkt[4:], i.ReparseTag)
+}
+
 type FileBasicInformationInfo struct {
 	CreationTime   Filetime
 	LastAccessTime Filetime
@@ -187,6 +196,19 @@ type FileCompressionInformationInfo struct {
 	Reserved             [3]uint8 // Placeholder for alignment and future use
 }
 
+func (i *FileCompressionInformationInfo) Size() int {
+	return 16
+}
+
+func (i *FileCompressionInformationInfo) Encode(pkt []byte) {
+	le.PutUint64(pkt[:], uint64(i.CompressedFileSize))
+	le.PutUint16(pkt[8:], i.CompressionFormat)
+	pkt[10] = i.CompressionUnitShift
+	pkt[11] = i.ChunkShift
+	pkt[12] = i.ClusterShift
+	copy(pkt[13:16], i.Reserved[:])
+}
+
 type FileEaInformationInfo struct {
 	EaSize uint32
 }
@@ -205,6 +227,32 @@ type FileFullEaInformationInfo struct {
 	EaNameLength    uint8
 	EaValueLength   uint16
 	EaName          string
+}
+
+type FileFullEaInformationInfoItems []FileFullEaInformationInfo
+
+func (i FileFullEaInformationInfoItems) Size() int {
+	size := 0
+	for _, item := range i {
+		size += Align(8+len(item.EaName)+1+int(item.EaValueLength), 4)
+	}
+	return size
+}
+
+func (i FileFullEaInformationInfoItems) Encode(pkt []byte) {
+	off := 0
+	for n, item := range i {
+		size := Align(8+len(item.EaName)+1+int(item.EaValueLength), 4)
+		if n < len(i)-1 {
+			item.NextEntryOffset = uint32(size)
+		}
+		le.PutUint32(pkt[off:], item.NextEntryOffset)
+		pkt[off+4] = item.Flags
+		pkt[off+5] = uint8(len(item.EaName))
+		le.PutUint16(pkt[off+6:], item.EaValueLength)
+		copy(pkt[off+8:], item.EaName)
+		off += size
+	}
 }
 
 type FileIdInformationInfo struct {
@@ -541,6 +589,47 @@ func (i FileFsVolumeInformationInfo) Encode(pkt []byte) {
 	le.PutUint32(pkt[12:], uint32(utf16le.EncodedStringLen(i.VolumeLabel)))
 	utf16le.EncodeString(pkt[18:], i.VolumeLabel)
 
+}
+
+type NetworkInterfaceInfo struct {
+	Next       uint32
+	IfIndex    uint32
+	Capability uint32
+	LinkSpeed  uint64
+	IPv4       [4]byte
+}
+
+func (i NetworkInterfaceInfo) Size() int {
+	return 152
+}
+
+func (i NetworkInterfaceInfo) Encode(pkt []byte) {
+	le.PutUint32(pkt[0:], i.Next)
+	le.PutUint32(pkt[4:], i.IfIndex)
+	le.PutUint32(pkt[8:], i.Capability)
+	le.PutUint64(pkt[16:], i.LinkSpeed)
+
+	sockAddr := pkt[24:152]
+	le.PutUint16(sockAddr[0:], 2) // AF_INET
+	binary.BigEndian.PutUint16(sockAddr[2:], 445)
+	copy(sockAddr[4:8], i.IPv4[:])
+}
+
+type NetworkInterfaceInfoList []NetworkInterfaceInfo
+
+func (l NetworkInterfaceInfoList) Size() int {
+	return len(l) * NetworkInterfaceInfo{}.Size()
+}
+
+func (l NetworkInterfaceInfoList) Encode(pkt []byte) {
+	off := 0
+	for n, item := range l {
+		if n < len(l)-1 {
+			item.Next = uint32(item.Size())
+		}
+		item.Encode(pkt[off:])
+		off += item.Size()
+	}
 }
 
 type FileDirectoryInformationInfo struct {

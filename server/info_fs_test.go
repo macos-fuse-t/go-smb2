@@ -42,3 +42,37 @@ func TestFileFsSectorSizeInformationInfoEncode(t *testing.T) {
 		}
 	}
 }
+
+func TestNetworkInterfaceInfoListEncode(t *testing.T) {
+	info := NetworkInterfaceInfoList{
+		{
+			IfIndex:    7,
+			Capability: 0,
+			LinkSpeed:  1_000_000_000,
+			IPv4:       [4]byte{192, 168, 64, 1},
+		},
+	}
+
+	if got := info.Size(); got != 152 {
+		t.Fatalf("Size() = %d, want 152", got)
+	}
+
+	pkt := make([]byte, info.Size())
+	info.Encode(pkt)
+
+	if got := le.Uint32(pkt[0:]); got != 0 {
+		t.Fatalf("Next = %d, want 0", got)
+	}
+	if got := le.Uint32(pkt[4:]); got != 7 {
+		t.Fatalf("IfIndex = %d, want 7", got)
+	}
+	if got := le.Uint64(pkt[16:]); got != 1_000_000_000 {
+		t.Fatalf("LinkSpeed = %d, want 1000000000", got)
+	}
+	if got := le.Uint16(pkt[24:]); got != 2 {
+		t.Fatalf("AddressFamily = %d, want 2", got)
+	}
+	if got := pkt[28:32]; string(got) != string([]byte{192, 168, 64, 1}) {
+		t.Fatalf("IPv4 = %v, want [192 168 64 1]", []byte(got))
+	}
+}
