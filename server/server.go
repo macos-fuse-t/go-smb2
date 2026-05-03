@@ -435,6 +435,7 @@ func (c *conn) echo(ctx *compoundContext, pkt []byte) error {
 	rsp.CreditRequestResponse = p.CreditRequest()
 	rsp.MessageId = p.MessageId()
 	rsp.Flags = 1
+	rsp.SessionId = p.SessionId()
 
 	return c.sendPacket(rsp, nil, nil)
 }

@@ -177,6 +177,9 @@ func (conn *conn) encodePacket(req Packet, tc *treeConn, ctx context.Context) ([
 	}
 
 	s := conn.session
+	if _, ok := req.(*EchoResponse); ok && hdr.SessionId == 0 {
+		s = nil
+	}
 
 	if s != nil && s.conn.useSession() {
 		hdr.SessionId = s.sessionId
@@ -262,8 +265,9 @@ func (conn *conn) runReciever() {
 			if reqSession == nil {
 				reqSession = conn.lookupSession(p.SessionId())
 			}
+			isSessionlessEcho := p.Command() == SMB2_ECHO && p.SessionId() == 0 && p.Flags()&SMB2_FLAGS_SIGNED == 0
 			switch {
-			case reqSession == nil && p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP:
+			case reqSession == nil && p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP && !isSessionlessEcho:
 				log.Warning("skip:", &InvalidResponseError{"unknown session id"})
 				log.Errorf("Session!!!: msg %d, %d %d", p.Command(), uint64(0), p.SessionId())
 				continue
