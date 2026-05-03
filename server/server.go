@@ -179,6 +179,52 @@ func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFile
 	return srv
 }
 
+func (d *Server) AddShare(name string, fs vfs.VFSFileSystem) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("share name is required")
+	}
+	if fs == nil {
+		return fmt.Errorf("share filesystem is required")
+	}
+	upperName := strings.ToUpper(name)
+	d.lock.Lock()
+	defer d.lock.Unlock()
+	if _, ok := d.shares[upperName]; ok {
+		return fmt.Errorf("share %q already exists", name)
+	}
+	d.shares[upperName] = fs
+	d.origShares[name] = fs
+	return nil
+}
+
+func (d *Server) RemoveShare(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("share name is required")
+	}
+	upperName := strings.ToUpper(name)
+	d.lock.Lock()
+	defer d.lock.Unlock()
+	if _, ok := d.shares[upperName]; !ok {
+		return fmt.Errorf("share %q does not exist", name)
+	}
+	delete(d.shares, upperName)
+	for existing := range d.origShares {
+		if strings.EqualFold(existing, name) {
+			delete(d.origShares, existing)
+			break
+		}
+	}
+	return nil
+}
+
+func (d *Server) Shares() []string {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+	return maps.Keys(d.origShares)
+}
+
 // Serve listens on the given address and serves SMB connections.
 func (d *Server) Serve(addr string) error {
 	listener, err := net.Listen("tcp", addr)
@@ -477,7 +523,7 @@ func (c *conn) treeConnect(pkt []byte) error {
 			tc = t.getTree()
 			tc.refCount++
 		} else {
-			shares := maps.Keys(c.serverCtx.origShares)
+			shares := c.serverCtx.Shares()
 			ft := &ipcTree{
 				treeConn: treeConn{
 					session:    c.session,
@@ -504,14 +550,19 @@ func (c *conn) treeConnect(pkt []byte) error {
 		}
 		path := parts[len(parts)-1]
 
+		c.serverCtx.lock.Lock()
 		fs, ok := c.serverCtx.shares[strings.ToUpper(path)]
 		if !ok {
-			if fs, ok = c.serverCtx.shares[strings.ToUpper(path)+"$"]; !ok {
-				log.Debugf("shares: %v", maps.Keys(c.serverCtx.shares))
-				rsp.Status = uint32(STATUS_BAD_NETWORK_NAME)
-				return c.sendPacket(rsp, nil, nil)
-			}
+			fs, ok = c.serverCtx.shares[strings.ToUpper(path)+"$"]
 		}
+		if !ok {
+			shares := maps.Keys(c.serverCtx.shares)
+			c.serverCtx.lock.Unlock()
+			log.Debugf("shares: %v", shares)
+			rsp.Status = uint32(STATUS_BAD_NETWORK_NAME)
+			return c.sendPacket(rsp, nil, nil)
+		}
+		c.serverCtx.lock.Unlock()
 
 		rsp.ShareType = SMB2_SHARE_TYPE_DISK
 		rsp.MaximalAccess = SYNCHRONIZE | WRITE_OWNER | WRITE_DAC | READ_CONTROL | DELETE |
