@@ -25,9 +25,6 @@ type fileTree struct {
 
 	openFiles      map[uint64]bool
 	aaplExtensions bool
-
-	ioReadSem  chan struct{}
-	ioWriteSem chan struct{}
 }
 
 func (t *fileTree) getTree() *treeConn {
@@ -213,7 +210,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 	}
 
 	if err == nil {
-		attrs, err = t.getAttr(h)
+		attrs, err = t.fs.GetAttr(h)
 	}
 	if err != nil {
 		status := STATUS_ACCESS_DENIED
@@ -317,7 +314,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 }
 
 func (t *fileTree) handleQFid(pkt []byte, open *Open) (Encoder, error) {
-	attrRoot, _ := t.getAttr(0)
+	attrRoot, _ := t.fs.GetAttr(0)
 
 	return &CreateContext{
 		Name: "QFid",
@@ -507,29 +504,14 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	if ctx == nil {
-		asyncId := randint64()
-		rsp := new(ErrorResponse)
-		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(STATUS_PENDING))
-
-		open := t.conn.serverCtx.getOpen(fileId.HandleId())
-
-		if err := c.sendPacket(rsp, &t.treeConn, nil); err != nil {
-			return err
-		}
-
-		t.finishClose(pkt, fileId, open, r.Flags(), asyncId, status)
-		return nil
-	}
-
 	rsp := new(CloseResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+
 	rsp.Status = status
 
 	open := t.conn.serverCtx.getOpen(fileId.HandleId())
-
 	if r.Flags()&SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB != 0 {
-		a, err := t.getAttr(vfs.VfsHandle(fileId.HandleId()))
+		a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 		if err != nil {
 			log.Errorf("Close: GetAttr() failed")
 			goto send
@@ -568,55 +550,6 @@ send:
 	return nil
 }
 
-func (t *fileTree) finishClose(pkt []byte, fileId *FileId, open *Open, flags uint16, asyncId uint64, status uint32) {
-	c := t.session.conn
-
-	rsp := new(CloseResponse)
-	PrepareAsyncResponse(&rsp.PacketHeader, pkt, asyncId, 0)
-	rsp.Status = status
-
-	if flags&SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB != 0 {
-		a, err := t.getAttr(vfs.VfsHandle(fileId.HandleId()))
-		if err != nil {
-			log.Errorf("Close: GetAttr() failed")
-			goto send
-		}
-
-		if open == nil {
-			log.Errorf("close: no open")
-			goto send
-		}
-		rsp.CloseFlags = SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB
-		rsp.CreationTime = BirthTimeFromVfs(a)
-		rsp.LastAccessTime = AccessTimeFromVfs(a)
-		rsp.LastWriteTime = ModifiedTimeFromVfs(a)
-		rsp.ChangeTime = ChangeTimeFromVfs(a)
-		rsp.EndofFile = int64(SizeFromVfs(a))
-		rsp.AllocationSize = int64(DiskSizeFromVfs(a))
-		rsp.FileAttributes = PermissionsFromVfs(a, open.pathName)
-	}
-send:
-	deletePending := open != nil && t.conn.serverCtx.closeOpen(open)
-	if deletePending {
-		if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
-			log.Errorf("Delete failed: %v", err)
-		}
-	}
-
-	t.closeAsync(vfs.VfsHandle(fileId.HandleId()), func(err error) {
-		if err != nil {
-			log.Errorf("Close failed: %v", err)
-		}
-		c.sendPacket(rsp, &t.treeConn, nil)
-	})
-
-	if open != nil && open.notifyReq != nil {
-		rsp1 := new(ErrorResponse)
-		PrepareAsyncResponse(&rsp1.PacketHeader, open.notifyReq, open.notifyReqAsyncId, uint32(STATUS_ACCESS_DENIED))
-		//c.sendPacket(rsp1, &t.treeConn, nil)
-	}
-}
-
 func (t *fileTree) flush(ctx *compoundContext, pkt []byte) error {
 	log.Debugf("flush")
 
@@ -637,36 +570,11 @@ func (t *fileTree) flush(ctx *compoundContext, pkt []byte) error {
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	if ctx == nil {
-		asyncId := randint64()
-		rsp := new(ErrorResponse)
-		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(STATUS_PENDING))
-		if err := c.sendPacket(rsp, &t.treeConn, nil); err != nil {
-			return err
-		}
-
-		t.finishFlush(pkt, fileId, asyncId)
-		return nil
-	}
-
 	t.fs.Flush(vfs.VfsHandle(fileId.HandleId()))
 
 	rsp := new(FlushResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
 	return c.sendPacket(rsp, &t.treeConn, ctx)
-}
-
-func (t *fileTree) finishFlush(pkt []byte, fileId *FileId, asyncId uint64) {
-	c := t.session.conn
-
-	rsp := new(FlushResponse)
-	PrepareAsyncResponse(&rsp.PacketHeader, pkt, asyncId, 0)
-	t.flushAsync(vfs.VfsHandle(fileId.HandleId()), func(err error) {
-		if err != nil {
-			log.Errorf("Flush failed: %v", err)
-		}
-		c.sendPacket(rsp, &t.treeConn, nil)
-	})
 }
 
 func (t *fileTree) readEA(ctx *compoundContext, fileId *FileId, open *Open, buf []byte, pkt []byte) error {
@@ -733,7 +641,6 @@ func (t *fileTree) read(ctx *compoundContext, pkt []byte) error {
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	// async read
 	asyncId := randint64()
 	if ctx != nil || open.isEa {
 		return t.readImpl(ctx, pkt, fileId, open, 0)
@@ -745,40 +652,24 @@ func (t *fileTree) read(ctx *compoundContext, pkt []byte) error {
 		return err
 	}
 
-	buf := make([]byte, r.Length())
-	t.readAsync(fileId, buf, r.Offset(), 0, func(n int, err error) {
-		t.sendReadResult(ctx, pkt, open, asyncId, buf, n, err)
-	})
-	return nil
+	return t.readImpl(ctx, pkt, fileId, open, asyncId)
 }
 
 func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open, asyncId uint64) error {
+	c := t.session.conn
+
 	res, _ := accept(SMB2_READ, pkt)
 	r := ReadRequestDecoder(res)
 
 	buf := make([]byte, r.Length())
+	var n int
+	var err error
 
 	if open.isEa {
 		return t.readEA(ctx, fileId, open, buf, pkt)
 	}
 
-	n, err := t.fs.Read(vfs.VfsHandle(fileId.HandleId()), buf, r.Offset(), 0)
-	return t.sendReadResult(ctx, pkt, open, asyncId, buf, n, err)
-}
-
-func (t *fileTree) readAsync(fileId *FileId, buf []byte, offset uint64, flags int, cb func(int, error)) {
-	if fs, ok := t.fs.(vfs.AsyncIOFileSystem); ok {
-		fs.ReadAsync(vfs.VfsHandle(fileId.HandleId()), buf, offset, flags, cb)
-		return
-	}
-
-	n, err := t.fs.Read(vfs.VfsHandle(fileId.HandleId()), buf, offset, flags)
-	cb(n, err)
-}
-
-func (t *fileTree) sendReadResult(ctx *compoundContext, pkt []byte, open *Open, asyncId uint64, buf []byte, n int, err error) error {
-	c := t.session.conn
-
+	n, err = t.fs.Read(vfs.VfsHandle(fileId.HandleId()), buf, r.Offset(), 0)
 	if err != nil && n == 0 {
 		status := STATUS_ACCESS_DENIED
 		if err == io.EOF {
@@ -800,7 +691,6 @@ func (t *fileTree) sendReadResult(ctx *compoundContext, pkt []byte, open *Open, 
 	rsp.DataRemaining = 0
 	rsp.Data = buf[:n]
 
-	log.Debugf("read async %d finished", asyncId)
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
 
@@ -826,13 +716,12 @@ func (t *fileTree) write(ctx *compoundContext, pkt []byte) error {
 
 	open := t.conn.serverCtx.getOpen(fileId.HandleId())
 	if open == nil {
-		log.Errorf("write: no open fileid=%d msg=%d offset=%d len=%d", fileId.HandleId(), PacketCodec(pkt).MessageId(), r.Offset(), r.Length())
+		log.Errorf("write: no open")
 		rsp := new(ErrorResponse)
 		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	// async write
 	asyncId := randint64()
 	if ctx != nil || open.isEa {
 		return t.writeImpl(ctx, pkt, fileId, open, 0)
@@ -844,16 +733,15 @@ func (t *fileTree) write(ctx *compoundContext, pkt []byte) error {
 		return err
 	}
 
-	t.writeAsync(fileId, r.Data(), r.Offset(), int(r.Flags()), func(n int, err error) {
-		t.sendWriteResult(ctx, pkt, asyncId, n, err)
-	})
-	return nil
+	return t.writeImpl(ctx, pkt, fileId, open, asyncId)
 }
 
 func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open, asyncId uint64) error {
 
 	var n int
 	var err error
+
+	c := t.session.conn
 
 	res, _ := accept(SMB2_WRITE, pkt)
 	r := WriteRequestDecoder(res)
@@ -867,58 +755,6 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 		log.Debugf("Write: %d offset %d", r.Length(), r.Offset())
 		n, err = t.fs.Write(vfs.VfsHandle(fileId.HandleId()), r.Data(), r.Offset(), int(r.Flags()))
 	}
-
-	return t.sendWriteResult(ctx, pkt, asyncId, n, err)
-}
-
-func (t *fileTree) writeAsync(fileId *FileId, data []byte, offset uint64, flags int, cb func(int, error)) {
-	if fs, ok := t.fs.(vfs.AsyncIOFileSystem); ok {
-		fs.WriteAsync(vfs.VfsHandle(fileId.HandleId()), data, offset, flags, cb)
-		return
-	}
-
-	n, err := t.fs.Write(vfs.VfsHandle(fileId.HandleId()), data, offset, flags)
-	cb(n, err)
-}
-
-func (t *fileTree) flushAsync(handle vfs.VfsHandle, cb func(error)) {
-	if fs, ok := t.fs.(vfs.AsyncIOFileSystem); ok {
-		fs.FlushAsync(handle, cb)
-		return
-	}
-
-	cb(t.fs.Flush(handle))
-}
-
-func (t *fileTree) closeAsync(handle vfs.VfsHandle, cb func(error)) {
-	if fs, ok := t.fs.(vfs.AsyncIOFileSystem); ok {
-		fs.CloseAsync(handle, cb)
-		return
-	}
-
-	cb(t.fs.Close(handle))
-}
-
-func (t *fileTree) getAttr(handle vfs.VfsHandle) (*vfs.Attributes, error) {
-	if fs, ok := t.fs.(vfs.AsyncIOFileSystem); ok {
-		type result struct {
-			attrs *vfs.Attributes
-			err   error
-		}
-
-		ch := make(chan result, 1)
-		fs.GetAttrAsync(handle, func(attrs *vfs.Attributes, err error) {
-			ch <- result{attrs: attrs, err: err}
-		})
-		res := <-ch
-		return res.attrs, res.err
-	}
-
-	return t.fs.GetAttr(handle)
-}
-
-func (t *fileTree) sendWriteResult(ctx *compoundContext, pkt []byte, asyncId uint64, n int, err error) error {
-	c := t.session.conn
 
 	if err != nil || n == 0 {
 		log.Errorf("Write failed: %v", err)
@@ -1081,7 +917,7 @@ func (t *fileTree) handleCreateOrGetObjectId(ctx *compoundContext, pkt []byte) e
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	attrRoot, _ := t.getAttr(0)
+	attrRoot, _ := t.fs.GetAttr(0)
 
 	id := &FileObjectId1{
 		ObjectId:      FileId{Persistent: fileId.Persistent},
@@ -1704,7 +1540,7 @@ func (t *fileTree) queryInfoFileSystem(ctx *compoundContext, pkt []byte) error {
 		if ctx != nil && ctx.fileId != nil {
 			fileId = ctx.fileId
 		}
-		attrRoot, _ := t.getAttr(0)
+		attrRoot, _ := t.fs.GetAttr(0)
 		id := &FileObjectId1{
 			ObjectId:      FileId{Persistent: fileId.Persistent},
 			BirthObjectId: FileId{Persistent: fileId.Persistent},
@@ -1752,7 +1588,7 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 	}
 
 	name := open.pathName
-	a, err := t.getAttr(vfs.VfsHandle(fileId.HandleId()))
+	a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 	if err != nil {
 		log.Errorf("queryInfoFile: GetAttr() failed")
 		rsp := new(ErrorResponse)
@@ -1910,7 +1746,7 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 		fileId := FileId{}
 		fileId.SetNodeId(a.GetInodeNumber())
 
-		rootAttr, err := t.getAttr(0)
+		rootAttr, err := t.fs.GetAttr(0)
 		if err != nil {
 			log.Errorf("queryInfoFile: root GetAttr() failed")
 			rsp := new(ErrorResponse)
@@ -1952,7 +1788,7 @@ func (t *fileTree) queryInfoSec(ctx *compoundContext, pkt []byte) error {
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	attrs, err := t.getAttr(vfs.VfsHandle(fileId.HandleId()))
+	attrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 	if err != nil {
 		log.Errorf("queryInfoSec: GetAttr() failed")
 		rsp := new(ErrorResponse)
@@ -2147,7 +1983,7 @@ func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	attrs, err := t.getAttr(vfs.VfsHandle(fileId.HandleId()))
+	attrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 	if err != nil {
 		log.Errorf("Delete failed to get attrs: %v", err)
 		rsp := new(ErrorResponse)

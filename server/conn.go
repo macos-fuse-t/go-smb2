@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -81,70 +80,6 @@ func (r *outstandingRequests) shutdown(err error) {
 	for _, rr := range r.requests {
 		rr.err = err
 		close(rr.recv)
-	}
-}
-
-func orderCommandName(cmd uint16) string {
-	switch cmd {
-	case SMB2_WRITE:
-		return "WRITE"
-	case SMB2_FLUSH:
-		return "FLUSH"
-	case SMB2_CLOSE:
-		return "CLOSE"
-	default:
-		return fmt.Sprintf("cmd=%d", cmd)
-	}
-}
-
-func orderTrackedCommand(cmd uint16) bool {
-	return cmd == SMB2_WRITE || cmd == SMB2_FLUSH || cmd == SMB2_CLOSE
-}
-
-func orderPacketDetails(pkt []byte) string {
-	p := PacketCodec(pkt)
-	if !orderTrackedCommand(p.Command()) {
-		return ""
-	}
-
-	fields := []string{
-		fmt.Sprintf("cmd=%s", orderCommandName(p.Command())),
-		fmt.Sprintf("msg=%d", p.MessageId()),
-		fmt.Sprintf("tree=%d", p.TreeId()),
-	}
-	switch p.Command() {
-	case SMB2_WRITE:
-		r := WriteRequestDecoder(p.Data())
-		if !r.IsInvalid() {
-			fileId := r.FileId().Decode()
-			fields = append(fields,
-				fmt.Sprintf("fileid=%d", fileId.HandleId()),
-				fmt.Sprintf("offset=%d", r.Offset()),
-				fmt.Sprintf("len=%d", r.Length()),
-			)
-		}
-	case SMB2_FLUSH:
-		r := FlushRequestDecoder(p.Data())
-		if !r.IsInvalid() {
-			fileId := r.FileId().Decode()
-			fields = append(fields, fmt.Sprintf("fileid=%d", fileId.HandleId()))
-		}
-	case SMB2_CLOSE:
-		r := CloseRequestDecoder(p.Data())
-		if !r.IsInvalid() {
-			fileId := r.FileId().Decode()
-			fields = append(fields,
-				fmt.Sprintf("fileid=%d", fileId.HandleId()),
-				fmt.Sprintf("flags=0x%x", r.Flags()),
-			)
-		}
-	}
-	return strings.Join(fields, " ")
-}
-
-func logOrder(stage string, pkt []byte) {
-	if details := orderPacketDetails(pkt); details != "" {
-		log.Debugf("smb-order %s %s", stage, details)
 	}
 }
 
@@ -397,7 +332,6 @@ func (conn *conn) runReciever() {
 				}
 			}
 
-			logOrder("recv", pkt)
 			e = conn.tryHandle(pkt, reqSession, compCtx, e)
 			if e != nil {
 				log.Warningln("skip:", e)
