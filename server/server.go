@@ -367,6 +367,7 @@ func (c *conn) Run() error {
 		case SMB2_CANCEL:
 			err = nil
 		default:
+			logOrder("slow-enqueue", pkt)
 			err = c.enqueueSlow(&slowRequest{
 				pkt:     pkt,
 				session: reqSession,
@@ -398,11 +399,13 @@ func (c *conn) runSlowHandler() {
 			if req.session != nil {
 				c.session = req.session
 			}
+			logOrder("slow-start", req.pkt)
 			if err := c.handleSlow(req); err != nil {
 				log.Errorf("slow path err: %v", err)
 				c.shutdown()
 				return
 			}
+			logOrder("slow-done", req.pkt)
 		}
 	}
 }
