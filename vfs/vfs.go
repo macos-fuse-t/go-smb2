@@ -71,6 +71,19 @@ type VFSFileSystem interface {
 	//RemoveNotify(VfsHandle) error
 }
 
+// AsyncIOFileSystem is an optional extension for backends that can dispatch
+// file operations without blocking the SMB request handler. The callback must
+// be called exactly once when the backend operation completes. Async methods
+// must queue the backend operation before returning so later operations can be
+// ordered by the caller without waiting for completion.
+type AsyncIOFileSystem interface {
+	FlushAsync(VfsHandle, func(error))
+	CloseAsync(VfsHandle, func(error))
+	GetAttrAsync(VfsHandle, func(*Attributes, error))
+	ReadAsync(VfsHandle, []byte, uint64, int, func(int, error))
+	WriteAsync(VfsHandle, []byte, uint64, int, func(int, error))
+}
+
 // ShareMask is a bitmask of operations that are permitted
 type ShareMask uint32
 
