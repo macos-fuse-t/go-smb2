@@ -273,6 +273,7 @@ func (d *Server) ServeListener(listener net.Listener) error {
 			wdone:               make(chan struct{}, 1),
 			write:               make(chan []byte, 10),
 			werr:                make(chan error, 1),
+			slow:                make(chan *slowRequest, 4096),
 			ctx:                 ctx,
 			cancel:              cancel,
 			serverCtx:           d,
@@ -305,6 +306,7 @@ func (d *Server) ServeListener(listener net.Listener) error {
 		d.lock.Unlock()
 		go conn.runReciever()
 		go conn.runSender()
+		go conn.runSlowHandler()
 
 		run := func() {
 			if err := conn.Run(); err != nil {
@@ -350,9 +352,6 @@ func (c *conn) Run() error {
 		if err != nil {
 			return err
 		}
-		if reqSession != nil {
-			c.session = reqSession
-		}
 
 		p := PacketCodec(pkt)
 		if p.Flags()&SMB2_FLAGS_ASYNC_COMMAND != 0 {
@@ -360,70 +359,114 @@ func (c *conn) Run() error {
 		}
 
 		switch p.Command() {
-		case SMB2_NEGOTIATE, SMB_COM_NEGOTIATE:
-			err = c.negotiate(pkt)
-		case SMB2_SESSION_SETUP:
-			err = c.sessionSetup(pkt)
-		case SMB2_LOGOFF:
-			err = c.logoff(pkt)
-		case SMB2_TREE_CONNECT:
-			err = c.treeConnect(pkt)
-		case SMB2_TREE_DISCONNECT:
-			err = c.treeDisconnect(pkt)
 		case SMB2_ECHO:
+			if reqSession != nil {
+				c.session = reqSession
+			}
 			err = c.echo(compCtx, pkt)
 		case SMB2_CANCEL:
 			err = nil
 		default:
-			p := PacketCodec(pkt)
-			tc, ok := c.treeMapById[p.TreeId()]
-			if !ok {
-				err = &InvalidRequestError{fmt.Sprintf("tree %d doesn't exist: command %d", p.TreeId(), p.Command())}
-				break
-			}
-
-			// if prev transaction req failed, don't forward it
-			if compCtx != nil && compCtx.lastStatus != 0 {
-				rsp := new(ErrorResponse)
-				PrepareResponse(&rsp.PacketHeader, pkt, uint32(compCtx.lastStatus))
-				c.sendPacket(rsp, tc.getTree(), compCtx)
-				continue
-			}
-
-			switch p.Command() {
-			case SMB2_CREATE:
-				err = tc.create(compCtx, pkt)
-			case SMB2_CLOSE:
-				err = tc.close(compCtx, pkt)
-			case SMB2_FLUSH:
-				err = tc.flush(compCtx, pkt)
-			case SMB2_READ:
-				err = tc.read(compCtx, pkt)
-			case SMB2_WRITE:
-				err = tc.write(compCtx, pkt)
-			case SMB2_LOCK:
-				err = tc.lock(compCtx, pkt)
-			case SMB2_IOCTL:
-				err = tc.ioctl(compCtx, pkt)
-			case SMB2_CANCEL:
-				err = tc.cancel(compCtx, pkt)
-			case SMB2_QUERY_DIRECTORY:
-				err = tc.queryDirectory(compCtx, pkt)
-			case SMB2_CHANGE_NOTIFY:
-				err = tc.changeNotify(compCtx, pkt)
-			case SMB2_QUERY_INFO:
-				err = tc.queryInfo(compCtx, pkt)
-			case SMB2_SET_INFO:
-				err = tc.setInfo(compCtx, pkt)
-			case SMB2_OPLOCK_BREAK:
-				err = tc.oplockBreak(compCtx, pkt)
-			}
+			err = c.enqueueSlow(&slowRequest{
+				pkt:     pkt,
+				session: reqSession,
+				compCtx: compCtx,
+			})
 		}
 		if err != nil {
 			log.Errorf("err: %v", err)
 			return err
 		}
 	}
+}
+
+func (c *conn) enqueueSlow(req *slowRequest) error {
+	select {
+	case c.slow <- req:
+		return nil
+	case <-c.ctx.Done():
+		return &ContextError{Err: c.ctx.Err()}
+	}
+}
+
+func (c *conn) runSlowHandler() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case req := <-c.slow:
+			if req.session != nil {
+				c.session = req.session
+			}
+			if err := c.handleSlow(req); err != nil {
+				log.Errorf("slow path err: %v", err)
+				c.shutdown()
+				return
+			}
+		}
+	}
+}
+
+func (c *conn) handleSlow(req *slowRequest) error {
+	pkt := req.pkt
+	compCtx := req.compCtx
+
+	p := PacketCodec(pkt)
+	switch p.Command() {
+	case SMB2_NEGOTIATE, SMB_COM_NEGOTIATE:
+		return c.negotiate(pkt)
+	case SMB2_SESSION_SETUP:
+		return c.sessionSetup(pkt)
+	case SMB2_LOGOFF:
+		return c.logoff(pkt)
+	case SMB2_TREE_CONNECT:
+		return c.treeConnect(pkt)
+	case SMB2_TREE_DISCONNECT:
+		return c.treeDisconnect(pkt)
+	}
+
+	tc, ok := c.treeMapById[p.TreeId()]
+	if !ok {
+		return &InvalidRequestError{fmt.Sprintf("tree %d doesn't exist: command %d", p.TreeId(), p.Command())}
+	}
+
+	// if prev transaction req failed, don't forward it
+	if compCtx != nil && compCtx.lastStatus != 0 {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(compCtx.lastStatus))
+		return c.sendPacket(rsp, tc.getTree(), compCtx)
+	}
+
+	switch p.Command() {
+	case SMB2_CREATE:
+		return tc.create(compCtx, pkt)
+	case SMB2_CLOSE:
+		return tc.close(compCtx, pkt)
+	case SMB2_FLUSH:
+		return tc.flush(compCtx, pkt)
+	case SMB2_READ:
+		return tc.read(compCtx, pkt)
+	case SMB2_WRITE:
+		return tc.write(compCtx, pkt)
+	case SMB2_LOCK:
+		return tc.lock(compCtx, pkt)
+	case SMB2_IOCTL:
+		return tc.ioctl(compCtx, pkt)
+	case SMB2_CANCEL:
+		return tc.cancel(compCtx, pkt)
+	case SMB2_QUERY_DIRECTORY:
+		return tc.queryDirectory(compCtx, pkt)
+	case SMB2_CHANGE_NOTIFY:
+		return tc.changeNotify(compCtx, pkt)
+	case SMB2_QUERY_INFO:
+		return tc.queryInfo(compCtx, pkt)
+	case SMB2_SET_INFO:
+		return tc.setInfo(compCtx, pkt)
+	case SMB2_OPLOCK_BREAK:
+		return tc.oplockBreak(compCtx, pkt)
+	}
+
+	return nil
 }
 
 func (c *conn) echo(ctx *compoundContext, pkt []byte) error {

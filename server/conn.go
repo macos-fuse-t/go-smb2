@@ -22,6 +22,12 @@ type requestResponse struct {
 	err           error
 }
 
+type slowRequest struct {
+	pkt     []byte
+	session *session
+	compCtx *compoundContext
+}
+
 type outstandingRequests struct {
 	m        sync.Mutex
 	s        chan uint64
@@ -101,6 +107,7 @@ type conn struct {
 	wdone chan struct{}
 	write chan []byte
 	werr  chan error
+	slow  chan *slowRequest
 
 	m sync.Mutex
 
