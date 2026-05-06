@@ -641,21 +641,10 @@ func (t *fileTree) read(ctx *compoundContext, pkt []byte) error {
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	asyncId := randint64()
-	if ctx != nil || open.isEa {
-		return t.readImpl(ctx, pkt, fileId, open, 0)
-	}
-
-	rsp := new(ErrorResponse)
-	PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(STATUS_PENDING))
-	if err := c.sendPacket(rsp, &t.treeConn, ctx); err != nil {
-		return err
-	}
-
-	return t.readImpl(ctx, pkt, fileId, open, asyncId)
+	return t.readImpl(ctx, pkt, fileId, open)
 }
 
-func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open, asyncId uint64) error {
+func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open) error {
 	c := t.session.conn
 
 	res, _ := accept(SMB2_READ, pkt)
@@ -682,12 +671,12 @@ func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, op
 			log.Errorf("Read: %v", err)
 		}
 		rsp := new(ErrorResponse)
-		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(status))
+		PrepareResponse(rsp.Header(), pkt, uint32(status))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
 	rsp := new(ReadResponse)
-	PrepareAsyncResponse(&rsp.PacketHeader, pkt, asyncId, 0)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
 	rsp.DataRemaining = 0
 	rsp.Data = buf[:n]
 
@@ -722,21 +711,10 @@ func (t *fileTree) write(ctx *compoundContext, pkt []byte) error {
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
-	asyncId := randint64()
-	if ctx != nil || open.isEa {
-		return t.writeImpl(ctx, pkt, fileId, open, 0)
-	}
-
-	rsp := new(ErrorResponse)
-	PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(STATUS_PENDING))
-	if err := c.sendPacket(rsp, &t.treeConn, ctx); err != nil {
-		return err
-	}
-
-	return t.writeImpl(ctx, pkt, fileId, open, asyncId)
+	return t.writeImpl(ctx, pkt, fileId, open)
 }
 
-func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open, asyncId uint64) error {
+func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open) error {
 
 	var n int
 	var err error
@@ -760,12 +738,12 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 		log.Errorf("Write failed: %v", err)
 		status := STATUS_IO_DEVICE_ERROR
 		rsp := new(ErrorResponse)
-		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(status))
+		PrepareResponse(rsp.Header(), pkt, uint32(status))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
 	rsp := new(WriteResponse)
-	PrepareAsyncResponse(&rsp.PacketHeader, pkt, asyncId, 0)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
 	rsp.Count = uint32(n)
 
 	return c.sendPacket(rsp, &t.treeConn, ctx)
