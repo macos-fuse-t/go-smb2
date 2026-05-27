@@ -37,6 +37,25 @@ func TestCreateResponseContextNextIncludesAlignmentPadding(t *testing.T) {
 	}
 }
 
+func TestCreateResponseWithoutContextsHasZeroContextLength(t *testing.T) {
+	rsp := &CreateResponse{
+		FileId: &FileId{},
+	}
+	pkt := make([]byte, rsp.Size())
+	rsp.Encode(pkt)
+
+	decoded := CreateResponseDecoder(pkt[64:])
+	if got := decoded.CreateContextsOffset(); got != 0 {
+		t.Fatalf("CreateContextsOffset = %d, want 0", got)
+	}
+	if got := decoded.CreateContextsLength(); got != 0 {
+		t.Fatalf("CreateContextsLength = %d, want 0", got)
+	}
+	if contexts := decoded.CreateContexts(); contexts != nil {
+		t.Fatalf("CreateContexts() = %v, want nil", contexts)
+	}
+}
+
 func TestCreateRequestContextNextIncludesAlignmentPadding(t *testing.T) {
 	req := &CreateRequest{
 		Name: "root",

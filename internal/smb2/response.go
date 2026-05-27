@@ -830,7 +830,9 @@ func (c *CreateResponse) Encode(pkt []byte) {
 		off += c.Size()
 	}
 
-	le.PutUint32(res[84:88], uint32(off-firstCtxOff)) // CreateContextsLength
+	if firstCtxOff != 0 {
+		le.PutUint32(res[84:88], uint32(off-firstCtxOff)) // CreateContextsLength
+	}
 }
 
 type CreateResponseDecoder []byte
