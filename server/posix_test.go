@@ -20,8 +20,8 @@ func TestFilePosixInformationUsesUnixMode(t *testing.T) {
 	attrs.SetGID(1001)
 
 	info := newFilePosixInformationInfo(vfs.DirInfo{Name: "websock_client.h", Attributes: attrs})
-	if info.PosixMode != 0644 {
-		t.Fatalf("POSIX mode = %#o, want 0644", info.PosixMode)
+	if info.PosixMode != 0100644 {
+		t.Fatalf("POSIX mode = %#o, want 0100644", info.PosixMode)
 	}
 	if info.NumberOfLinks != 3 {
 		t.Fatalf("link count = %d, want 3", info.NumberOfLinks)
@@ -29,8 +29,8 @@ func TestFilePosixInformationUsesUnixMode(t *testing.T) {
 
 	buf := make([]byte, info.Size())
 	info.Encode(buf)
-	if got := le.Uint32(buf[76:]); got != 0644 {
-		t.Fatalf("encoded POSIX mode = %#o, want 0644", got)
+	if got := le.Uint32(buf[76:]); got != 0100644 {
+		t.Fatalf("encoded POSIX mode = %#o, want 0100644", got)
 	}
 	if got := le.Uint32(buf[80+info.OwnerSID.Size()+info.GroupSID.Size():]); got == 0 {
 		t.Fatalf("filename length was not encoded")
@@ -54,8 +54,8 @@ func TestFilePosixDirectoryInformationStartsWithNextEntryOffset(t *testing.T) {
 	if got := le.Uint32(buf[:4]); got != uint32(entry.Size()) {
 		t.Fatalf("next entry offset = %d, want %d", got, entry.Size())
 	}
-	if got := le.Uint32(buf[8+76:]); got != 010755 {
-		t.Fatalf("encoded directory POSIX mode = %#o, want 010755", got)
+	if got := le.Uint32(buf[8+76:]); got != 040755 {
+		t.Fatalf("encoded directory POSIX mode = %#o, want 040755", got)
 	}
 	if got := le.Uint32(buf[8+80+entry.Info.OwnerSID.Size()+entry.Info.GroupSID.Size():]); got == 0 {
 		t.Fatalf("filename length was not encoded")

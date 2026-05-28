@@ -1205,9 +1205,19 @@ func posixModeFromVfs(a *vfs.Attributes) uint32 {
 	mode := posixPermsFromVfs(a)
 	switch a.GetFileType() {
 	case vfs.FileTypeDirectory:
-		mode |= 1 << 12
+		mode |= syscall.S_IFDIR
+	case vfs.FileTypeRegularFile:
+		mode |= syscall.S_IFREG
 	case vfs.FileTypeSymlink:
-		mode |= 2 << 12
+		mode |= syscall.S_IFLNK
+	case vfs.FileTypeBlockDevice:
+		mode |= syscall.S_IFBLK
+	case vfs.FileTypeCharacterDevice:
+		mode |= syscall.S_IFCHR
+	case vfs.FileTypeFIFO:
+		mode |= syscall.S_IFIFO
+	case vfs.FileTypeSocket:
+		mode |= syscall.S_IFSOCK
 	}
 	return mode
 }
