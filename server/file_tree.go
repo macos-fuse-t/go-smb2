@@ -77,6 +77,16 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 	err = nil
 	isSymlink := fileExists && (attrs.GetFileType() == vfs.FileTypeSymlink) && (r.CreateOptions()&FILE_OPEN_REPARSE_POINT == 0)
 	d := r.CreateDisposition()
+	posixPerms, hasPosixPerms := t.decodeCreatePosixPerms(r)
+	fileCreateMode := 0644
+	dirCreateMode := 0777
+	if hasPosixPerms && d != FILE_OPEN {
+		mode := int(posixPerms & 07777)
+		if mode != 0 {
+			fileCreateMode = mode
+			dirCreateMode = mode
+		}
+	}
 
 	if fileExists && t.conn.serverCtx.isDeletePending(attrs.GetInodeNumber()) {
 		log.Debugf("Open: delete pending: %s", r.Name())
@@ -108,7 +118,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 	case FILE_OPEN_IF:
 		flags = os.O_CREATE
 		if !fileExists && createDir {
-			_, err = t.fs.Mkdir(name, 0777)
+			_, err = t.fs.Mkdir(name, dirCreateMode)
 			isDir = true
 		}
 
@@ -131,7 +141,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		}
 
 		if createDir {
-			_, err = t.fs.Mkdir(name, 0777)
+			_, err = t.fs.Mkdir(name, dirCreateMode)
 			isDir = true
 		}
 		action = FILE_CREATED
@@ -202,7 +212,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 			flags |= 0x200000 // O_SYMLINK, O_PATH
 		}
 
-		h, err = t.fs.Open(name, flags, 0644)
+		h, err = t.fs.Open(name, flags, fileCreateMode)
 		log.Debugf("open file: %d, err %v", flags, err)
 	} else {
 		h, err = t.fs.OpenDir(name)
@@ -269,6 +279,7 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 		eaKey:             eaKey,
 		isSymlink:         isSymlink,
 		deleteOnClose:     (r.CreateOptions()&FILE_DELETE_ON_CLOSE != 0),
+		posixSemantics:    t.conn.posixExtensions,
 	}
 
 	cc := r.CreateContexts()
@@ -283,6 +294,12 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 			t.aaplExtensions = true
 			if enc, err := t.handleAAPLCC(res.Buffer()); err == nil {
 				rsp.Contexts = append(rsp.Contexts, enc)
+			}
+		case string(SMB3PosixExtensionsTag[:]):
+			if t.conn.posixExtensions {
+				if enc, err := t.handlePosixCC(attrs); err == nil {
+					rsp.Contexts = append(rsp.Contexts, enc)
+				}
 			}
 		case "DH2Q":
 			if enc, err := t.handleDH2Q(res.Buffer(), open); err == nil {
@@ -311,6 +328,36 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 	t.conn.serverCtx.addOpen(open)
 
 	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) decodeCreatePosixPerms(r CreateRequestDecoder) (uint32, bool) {
+	if !t.conn.posixExtensions {
+		return 0, false
+	}
+	cc := r.CreateContexts()
+	for len(cc) > 0 {
+		res := CreateContextDecoder(cc)
+		if res.Name() == string(SMB3PosixExtensionsTag[:]) {
+			buf := res.Buffer()
+			if len(buf) >= 4 {
+				return le.Uint32(buf[:4]) & 07777, true
+			}
+			return 0, false
+		}
+		next := res.Next()
+		if next == 0 {
+			break
+		}
+		cc = cc[next:]
+	}
+	return 0, false
+}
+
+func (t *fileTree) handlePosixCC(attrs *vfs.Attributes) (Encoder, error) {
+	return &CreateContext{
+		Name: string(SMB3PosixExtensionsTag[:]),
+		Data: newPosixCreateContextResponse(attrs),
+	}, nil
 }
 
 func (t *fileTree) handleQFid(pkt []byte, open *Open) (Encoder, error) {
@@ -510,10 +557,10 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 	rsp.Status = status
 
 	open := t.conn.serverCtx.getOpen(fileId.HandleId())
-	if r.Flags()&SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB != 0 {
+	if closePostQueryAttrsAllowed(r.Flags(), open) {
 		a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 		if err != nil {
-			log.Errorf("Close: GetAttr() failed")
+			log.Errorf("Close: GetAttr() failed: %v", err)
 			goto send
 		}
 
@@ -531,6 +578,9 @@ func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
 		rsp.FileAttributes = PermissionsFromVfs(a, open.pathName)
 	}
 send:
+	if err := t.applyPosixDeleteOnClose(fileId, open); err != nil {
+		log.Errorf("POSIX delete-on-close failed: %v", err)
+	}
 	deletePending := open != nil && t.conn.serverCtx.closeOpen(open)
 	if deletePending {
 		if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
@@ -548,6 +598,17 @@ send:
 		//c.sendPacket(rsp1, &t.treeConn, nil)
 	}
 	return nil
+}
+
+func closePostQueryAttrsAllowed(flags uint16, open *Open) bool {
+	if flags&SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB == 0 {
+		return false
+	}
+	// SMB2 close post-query attributes have no POSIX mode field. Returning
+	// them for POSIX opens makes Linux CIFS refresh the inode from DOS attrs
+	// and fall back to mount file_mode, dropping executable bits until the
+	// next POSIX query revalidates the inode.
+	return open == nil || !open.posixSemantics
 }
 
 func (t *fileTree) flush(ctx *compoundContext, pkt []byte) error {
@@ -657,6 +718,11 @@ func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, op
 	if open.isEa {
 		return t.readEA(ctx, fileId, open, buf, pkt)
 	}
+	if c.serverCtx.ioConflictsWithByteRangeLock(open, r.Offset(), uint64(r.Length()), false) {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_FILE_LOCK_CONFLICT))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
 
 	n, err = t.fs.Read(vfs.VfsHandle(fileId.HandleId()), buf, r.Offset(), 0)
 	if err != nil && n == 0 {
@@ -730,6 +796,11 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 		t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data())
 		n = len(r.Data())
 	} else {
+		if c.serverCtx.ioConflictsWithByteRangeLock(open, r.Offset(), uint64(r.Length()), true) {
+			rsp := new(ErrorResponse)
+			PrepareResponse(rsp.Header(), pkt, uint32(STATUS_FILE_LOCK_CONFLICT))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
 		log.Debugf("Write: %d offset %d", r.Length(), r.Offset())
 		n, err = t.fs.Write(vfs.VfsHandle(fileId.HandleId()), r.Data(), r.Offset(), int(r.Flags()))
 	}
@@ -753,12 +824,81 @@ func (t *fileTree) lock(ctx *compoundContext, pkt []byte) error {
 	log.Debugf("Lock")
 	c := t.session.conn
 
-	//rsp := new(ErrorResponse)
-	//PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
-	rsp := new(LockResponse)
-	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	res, err := accept(SMB2_LOCK, pkt)
+	if err != nil {
+		return err
+	}
+	r := LockRequestDecoder(res)
+	if r.IsInvalid() {
+		return &InvalidRequestError{"broken lock request"}
+	}
 
-	return c.sendPacket(rsp, &t.treeConn, ctx)
+	fileID := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileID = ctx.fileId
+	}
+	if IsInvalidFileId(fileID) {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+	open := c.serverCtx.getOpen(fileID.HandleId())
+	if open == nil || open.durableFileId != fileID.NodeId() {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	elements, status := decodeSMBLockElements(r.Locks())
+	if status != STATUS_SUCCESS {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(status))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	finish := func(request []byte, compound *compoundContext) error {
+		old, status := c.serverCtx.reserveByteRangeLocks(open, elements)
+		if status == STATUS_SUCCESS {
+			if locker, ok := t.fs.(vfs.ByteRangeLocker); ok {
+				locks := make([]vfs.ByteRangeLock, len(elements))
+				for i, element := range elements {
+					locks[i] = element.vfsLock()
+				}
+				if err := locker.Lock(vfs.VfsHandle(open.fileId), locks); err != nil {
+					c.serverCtx.rollbackByteRangeLocks(open, old)
+					status = lockErrorStatus(err)
+				}
+			}
+		}
+		if status != STATUS_SUCCESS {
+			rsp := new(ErrorResponse)
+			PrepareResponse(rsp.Header(), request, uint32(status))
+			return c.sendPacket(rsp, &t.treeConn, compound)
+		}
+		rsp := new(LockResponse)
+		PrepareResponse(&rsp.PacketHeader, request, 0)
+		return c.sendPacket(rsp, &t.treeConn, compound)
+	}
+
+	// Do not occupy the connection's serial slow path while a blocking lock
+	// waits; the unlock that wakes it may arrive over the same connection.
+	blocking := false
+	for _, element := range elements {
+		if !element.unlock && !element.failImmediately {
+			blocking = true
+			break
+		}
+	}
+	if blocking && ctx == nil {
+		request := append([]byte(nil), pkt...)
+		go func() {
+			if err := finish(request, nil); err != nil {
+				log.Errorf("Lock response failed: %v", err)
+			}
+		}()
+		return nil
+	}
+	return finish(pkt, ctx)
 }
 
 func (t *fileTree) handleReparsePointReq(ctx *compoundContext, pkt []byte) error {
@@ -1094,6 +1234,88 @@ func newFileIdAllExtdBothDirectoryInformationInfo(d vfs.DirInfo) FileIdAllExtdBo
 	return info
 }
 
+func posixPermsFromVfs(a *vfs.Attributes) uint32 {
+	if mode, ok := a.GetUnixMode(); ok {
+		return mode & 07777
+	}
+	if perms, ok := a.GetPermissions(); ok {
+		return perms.ToMode()
+	}
+	return 0777
+}
+
+func posixModeFromVfs(a *vfs.Attributes) uint32 {
+	mode := posixPermsFromVfs(a)
+	switch a.GetFileType() {
+	case vfs.FileTypeDirectory:
+		mode |= syscall.S_IFDIR
+	case vfs.FileTypeRegularFile:
+		mode |= syscall.S_IFREG
+	case vfs.FileTypeSymlink:
+		mode |= syscall.S_IFLNK
+	case vfs.FileTypeBlockDevice:
+		mode |= syscall.S_IFBLK
+	case vfs.FileTypeCharacterDevice:
+		mode |= syscall.S_IFCHR
+	case vfs.FileTypeFIFO:
+		mode |= syscall.S_IFIFO
+	case vfs.FileTypeSocket:
+		mode |= syscall.S_IFSOCK
+	}
+	return mode
+}
+
+func reparseTagFromVfs(a *vfs.Attributes) uint32 {
+	if a.GetFileType() == vfs.FileTypeSymlink {
+		return IO_REPARSE_TAG_SYMLINK
+	}
+	return 0
+}
+
+func newPosixCreateContextResponse(a *vfs.Attributes) *PosixCreateContextResponse {
+	uid, _ := a.GetUID()
+	gid, _ := a.GetGID()
+	return &PosixCreateContextResponse{
+		NumberOfLinks: a.GetLinkCount(),
+		ReparseTag:    reparseTagFromVfs(a),
+		PosixPerms:    posixModeFromVfs(a),
+		OwnerSID:      SIDFromUid(uid),
+		GroupSID:      SIDFromGid(gid),
+	}
+}
+
+func newFilePosixInformationInfo(d vfs.DirInfo) FilePosixInformationInfo {
+	device, _ := d.GetDeviceNumber()
+	uid, _ := d.GetUID()
+	gid, _ := d.GetGID()
+	info := FilePosixInformationInfo{
+		EndOfFile:      SizeFromVfs(&d.Attributes),
+		AllocationSize: DiskSizeFromVfs(&d.Attributes),
+		FileAttributes: PermissionsFromVfs(&d.Attributes, d.Name),
+		Inode:          d.GetInodeNumber(),
+		Device:         uint32(device),
+		NumberOfLinks:  d.GetLinkCount(),
+		ReparseTag:     reparseTagFromVfs(&d.Attributes),
+		PosixMode:      posixModeFromVfs(&d.Attributes),
+		OwnerSID:       SIDFromUid(uid),
+		GroupSID:       SIDFromGid(gid),
+		FileName:       d.Name,
+	}
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	return info
+}
+
+func newFilePosixDirectoryInformationInfo(d vfs.DirInfo) FilePosixDirectoryInformationInfo {
+	return FilePosixDirectoryInformationInfo{
+		FileIndex: 0,
+		Info:      newFilePosixInformationInfo(d),
+		FileName:  d.Name,
+	}
+}
+
 func (t *fileTree) newFileIdBothDirectoryInformationInfo2(d vfs.DirInfo, parent *Open) FileIdBothDirectoryInformationInfo2 {
 	info := FileIdBothDirectoryInformationInfo2{
 		FileIndex: 0,
@@ -1168,6 +1390,8 @@ func (t *fileTree) makeItem(class uint8, d vfs.DirInfo, parent *Open) Encoder {
 		return newFileIdFullDirectoryInformationInfo(d)
 	case FileIdAllExtdBothDirectoryInformation:
 		return newFileIdAllExtdBothDirectoryInformationInfo(d)
+	case FilePosixInformation:
+		return newFilePosixDirectoryInformationInfo(d)
 	default:
 		log.Warningf("bad info class %d", class)
 	}
@@ -1273,7 +1497,7 @@ func (t *fileTree) queryDirectory(ctx *compoundContext, pkt []byte) error {
 	switch r.FileInfoClass() {
 	case FileIdBothDirectoryInformation, FileFullDirectoryInformation, FileNamesInformation,
 		FileDirectoryInformation, FileIdFullDirectoryInformation, FileBothDirectoryInformation,
-		FileIdAllExtdBothDirectoryInformation:
+		FileIdAllExtdBothDirectoryInformation, FilePosixInformation:
 		break
 	default:
 		log.Errorf("wrong info class %d", r.FileInfoClass())
@@ -1313,6 +1537,8 @@ func (t *fileTree) queryDirectory(ctx *compoundContext, pkt []byte) error {
 	if r.Flags()&(RESTART_SCANS|REOPEN) != 0 {
 		readDirFlags = vfs.ReadDirRestart
 		open.queryDirectoryPending = nil
+		open.queryDirectorySingleName = ""
+		open.queryDirectorySingleDone = false
 	}
 
 	name := r.FileName()
@@ -1323,12 +1549,16 @@ func (t *fileTree) queryDirectory(ctx *compoundContext, pkt []byte) error {
 		Status = uint32(STATUS_NO_SUCH_FILE)
 
 		if !ContainsWildcard(name) {
-			if attrs, err := t.fs.Lookup(vfs.VfsHandle(fileId.HandleId()), name); err == nil {
+			if open.queryDirectorySingleDone && open.queryDirectorySingleName == name {
+				Status = uint32(STATUS_NO_MORE_FILES)
+			} else if attrs, err := t.fs.Lookup(vfs.VfsHandle(fileId.HandleId()), name); err == nil {
 				log.Debugf("lookup %s success", name)
 				d := vfs.DirInfo{Name: name, Attributes: *attrs}
 				info := t.makeItem(r.FileInfoClass(), d, open)
 				if appendDirectoryInfo(out, info, maxOutputSize) {
 					Status = 0
+					open.queryDirectorySingleName = name
+					open.queryDirectorySingleDone = true
 				} else {
 					Status = uint32(STATUS_BUFFER_TOO_SMALL)
 				}
@@ -1525,6 +1755,27 @@ func (t *fileTree) queryInfoFileSystem(ctx *compoundContext, pkt []byte) error {
 		}
 		le.PutUint64(id.BirthVolumeId.Persistent[:], attrRoot.GetInodeNumber())
 		info = id
+	case FilePosixInformation:
+		rootAttr, _ := t.fs.GetAttr(0)
+		fsInfo := &FileFsPosixInformationInfo{
+			OptimalTransferSize: bs,
+			BlockSize:           bs,
+			FsIdentifier:        rootAttr.GetInodeNumber(),
+		}
+		if ta >= 0 {
+			fsInfo.TotalBlocks = uint64(ta)
+		}
+		if au >= 0 {
+			fsInfo.BlocksAvailable = uint64(au)
+			fsInfo.UserBlocksAvailable = uint64(au)
+		}
+		if files, ok := s.GetFiles(); ok {
+			fsInfo.TotalFileNodes = files
+		}
+		if ffree, ok := s.GetFreeFiles(); ok {
+			fsInfo.FreeFileNodes = ffree
+		}
+		info = fsInfo
 	default:
 		log.Errorf("queryInfoFileSystem: unsupported type %d", r.FileInfoClass())
 		return &InvalidRequestError{"unsupported query class"}
@@ -1568,7 +1819,7 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 	name := open.pathName
 	a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 	if err != nil {
-		log.Errorf("queryInfoFile: GetAttr() failed")
+		log.Errorf("queryInfoFile: GetAttr() failed: %v", err)
 		rsp := new(ErrorResponse)
 		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
@@ -1736,6 +1987,8 @@ func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
 			VolumeSerialNumber: rootAttr.GetInodeNumber(),
 			FileId:             fileId,
 		}
+	case FilePosixInformation:
+		info = newFilePosixInformationInfo(vfs.DirInfo{Name: name, Attributes: *a})
 	default:
 		log.Errorf("queryInfoFile: unsupported type %d", r.FileInfoClass())
 		return &InvalidRequestError{"unsupported query class"}
@@ -1870,6 +2123,13 @@ func (t *fileTree) setBasicInfo(ctx *compoundContext, fileId *FileId, open *Open
 	info := FileBasicInformationInfoDecoder(r.Buffer())
 
 	a := new(vfs.Attributes)
+	if fileAttrs := info.FileAttributes(); fileAttrs != 0 {
+		if oldAttrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId())); err == nil {
+			if mode, ok := oldAttrs.GetUnixMode(); ok {
+				a.SetUnixMode(unixModeWithFileAttributes(mode, fileAttrs))
+			}
+		}
+	}
 
 	ns := info.LastAccessTime().Nanoseconds()
 	if ns != 0 {
@@ -1908,6 +2168,13 @@ func (t *fileTree) setBasicInfo(ctx *compoundContext, fileId *FileId, open *Open
 	rsp := new(SetInfoResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
 	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func unixModeWithFileAttributes(mode uint32, fileAttrs uint32) uint32 {
+	if fileAttrs&FILE_ATTRIBUTE_READONLY != 0 {
+		return mode &^ 0222
+	}
+	return mode | 0200
 }
 
 func (t *fileTree) setEndOfFileInfo(ctx *compoundContext, fileId *FileId, pkt []byte) error {
@@ -1961,12 +2228,22 @@ func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
+	if status := t.applyDeleteDisposition(fileId, open); status != 0 {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, status)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	rsp := new(SetInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) applyDeleteDisposition(fileId *FileId, open *Open) uint32 {
 	attrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
 	if err != nil {
 		log.Errorf("Delete failed to get attrs: %v", err)
-		rsp := new(ErrorResponse)
-		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
-		return c.sendPacket(rsp, &t.treeConn, ctx)
+		return uint32(STATUS_ACCESS_DENIED)
 	}
 
 	if attrs.GetFileType() == vfs.FileTypeDirectory {
@@ -1980,17 +2257,43 @@ func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open
 			}
 			if !isEmpty {
 				log.Debugf("Delete failed: directory not empty: %v", err)
-				rsp := new(ErrorResponse)
-				PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_DIRECTORY_NOT_EMPTY))
-				return c.sendPacket(rsp, &t.treeConn, ctx)
+				return uint32(STATUS_DIRECTORY_NOT_EMPTY)
 			}
 		}
 	}
-	t.conn.serverCtx.setDeletePending(open.durableFileId, true)
 
-	rsp := new(SetInfoResponse)
-	PrepareResponse(&rsp.PacketHeader, pkt, 0)
-	return c.sendPacket(rsp, &t.treeConn, ctx)
+	if open.posixSemantics {
+		if err := t.applyPosixDelete(fileId, open); err != nil {
+			status := STATUS_ACCESS_DENIED
+			if os.IsNotExist(err) {
+				status = STATUS_OBJECT_NAME_NOT_FOUND
+			}
+			log.Errorf("POSIX delete failed: %v", err)
+			return uint32(status)
+		}
+	} else {
+		t.conn.serverCtx.setDeletePending(open.durableFileId, true)
+	}
+	return 0
+}
+
+func (t *fileTree) applyPosixDelete(fileId *FileId, open *Open) error {
+	if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
+		return err
+	}
+	t.conn.serverCtx.setDeletePending(open.durableFileId, false)
+	return nil
+}
+
+func (t *fileTree) applyPosixDeleteOnClose(fileId *FileId, open *Open) error {
+	if open == nil || !open.deleteOnClose || !open.posixSemantics {
+		return nil
+	}
+	if err := t.applyPosixDelete(fileId, open); err != nil {
+		return err
+	}
+	open.deleteOnClose = false
+	return nil
 }
 
 func (t *fileTree) setDispositionInfoEa(ctx *compoundContext, fileId *FileId, eaKey string, pkt []byte) error {
@@ -2024,6 +2327,10 @@ func (t *fileTree) setRename(ctx *compoundContext, fileId *FileId, pkt []byte) e
 		rsp := new(ErrorResponse)
 		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+	if open := t.conn.serverCtx.getOpen(fileId.HandleId()); open != nil {
+		open.pathName = to
+		open.fileName = path.Base(to)
 	}
 
 	rsp := new(SetInfoResponse)

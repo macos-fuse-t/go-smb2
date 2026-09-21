@@ -24,3 +24,7 @@ func statFS(rootPath string) (*vfs.FSAttributes, error) {
 func openSymlink(p string) (*os.File, error) {
 	return os.OpenFile(p, os.O_RDONLY, 0)
 }
+
+func applyFileLocks(file *os.File, locks []vfs.ByteRangeLock) error {
+	return nil
+}

@@ -100,6 +100,7 @@ type conn struct {
 	preauthIntegrityHashValue [64]byte
 	cipherId                  uint16
 	hashId                    uint16
+	posixExtensions           bool
 
 	account *account
 

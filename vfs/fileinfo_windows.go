@@ -13,6 +13,7 @@ func CompatStat(stat os.FileInfo) (Stat, bool) {
 		Ino:     fallbackInode(stat),
 		Blocks:  (stat.Size() + 511) / 512,
 		BlkSize: 4096,
+		Nlink:   1,
 		Atime:   mtime,
 		Mtime:   mtime,
 		Ctime:   mtime,

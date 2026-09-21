@@ -76,3 +76,23 @@ func TestNetworkInterfaceInfoListEncode(t *testing.T) {
 		t.Fatalf("IPv4 = %v, want [192 168 64 1]", []byte(got))
 	}
 }
+
+func TestFileBothDirectoryInformationInfoFileNameOffset(t *testing.T) {
+	info := FileBothDirectoryInformationInfo{FileName: "ab"}
+	if got := info.Size(); got != 104 {
+		t.Fatalf("Size() = %d, want 104", got)
+	}
+
+	pkt := make([]byte, info.Size())
+	info.Encode(pkt)
+
+	if got := le.Uint32(pkt[60:]); got != 4 {
+		t.Fatalf("FileNameLength = %d, want 4", got)
+	}
+	if pkt[82] == 0x61 && pkt[83] == 0x00 {
+		t.Fatalf("FileName was encoded at old offset 82")
+	}
+	if pkt[94] != 0x61 || pkt[95] != 0x00 || pkt[96] != 0x62 || pkt[97] != 0x00 {
+		t.Fatalf("FileName not encoded at offset 94: %v", pkt[94:98])
+	}
+}

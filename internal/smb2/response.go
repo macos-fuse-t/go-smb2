@@ -809,27 +809,30 @@ func (c *CreateResponse) Encode(pkt []byte) {
 	off := 88
 
 	var ctx []byte
-	var next int
+	var ctxOff int
+	var firstCtxOff int
 
 	for i, c := range c.Contexts {
 		off = Roundup(off, 8)
 
 		if i == 0 {
 			le.PutUint32(res[80:84], uint32(64+off)) // CreateContextsOffset
+			firstCtxOff = off
 		} else {
-			le.PutUint32(ctx[:4], uint32(next)) // Next
+			le.PutUint32(ctx[:4], uint32(off-ctxOff)) // Next
 		}
 
+		ctxOff = off
 		ctx = res[off:]
 
 		c.Encode(ctx)
 
-		next = c.Size()
-
-		off += next
+		off += c.Size()
 	}
 
-	le.PutUint32(res[84:88], uint32(off-88)) // CreateContextsLength
+	if firstCtxOff != 0 {
+		le.PutUint32(res[84:88], uint32(off-firstCtxOff)) // CreateContextsLength
+	}
 }
 
 type CreateResponseDecoder []byte

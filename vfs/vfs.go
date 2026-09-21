@@ -71,6 +71,27 @@ type VFSFileSystem interface {
 	//RemoveNotify(VfsHandle) error
 }
 
+type ByteRangeLockType uint8
+
+const (
+	ByteRangeLockShared ByteRangeLockType = iota + 1
+	ByteRangeLockExclusive
+	ByteRangeLockUnlock
+)
+
+type ByteRangeLock struct {
+	Offset          uint64
+	Length          uint64
+	Type            ByteRangeLockType
+	FailImmediately bool
+}
+
+// ByteRangeLocker is optional. Filesystems that do not implement it retain
+// the historical SMB server behavior of accepting locks as a local no-op.
+type ByteRangeLocker interface {
+	Lock(handle VfsHandle, locks []ByteRangeLock) error
+}
+
 // ShareMask is a bitmask of operations that are permitted
 type ShareMask uint32
 

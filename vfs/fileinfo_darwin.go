@@ -14,8 +14,12 @@ func CompatStat(stat os.FileInfo) (Stat, bool) {
 
 	s := Stat{
 		Ino:     sysStat.Ino,
+		Dev:     uint64(sysStat.Dev),
 		Blocks:  sysStat.Blocks,
 		BlkSize: sysStat.Blksize,
+		Nlink:   uint32(sysStat.Nlink),
+		UID:     sysStat.Uid,
+		GID:     sysStat.Gid,
 		Atime:   time.Unix(sysStat.Atimespec.Sec, sysStat.Atimespec.Nsec),
 		Mtime:   time.Unix(sysStat.Mtimespec.Sec, sysStat.Mtimespec.Nsec),
 		Ctime:   time.Unix(sysStat.Ctimespec.Sec, sysStat.Ctimespec.Nsec),

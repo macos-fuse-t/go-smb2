@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"sync"
+	"syscall"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/macos-fuse-t/go-smb2/stats"
@@ -50,14 +51,17 @@ func (fs *PassthroughFS) GetAttr(handle vfs.VfsHandle) (*vfs.Attributes, error) 
 			return nil, fmt.Errorf("bad handle")
 		}
 		open := v.(*OpenFile)
-		p = open.path
+		info, err := open.f.Stat()
+		if err != nil {
+			return nil, err
+		}
+		return fileInfoToAttr(info)
 	}
 
 	info, err := os.Lstat(p)
 	if err != nil {
 		return nil, err
 	}
-
 	a, err := fileInfoToAttr(info)
 	if err != nil {
 		return nil, err
@@ -124,6 +128,18 @@ func (fs *PassthroughFS) FSync(handle vfs.VfsHandle) error {
 
 func (fs *PassthroughFS) Flush(handle vfs.VfsHandle) error {
 	return nil
+}
+
+func (fs *PassthroughFS) Lock(handle vfs.VfsHandle, locks []vfs.ByteRangeLock) error {
+	v, ok := fs.openFiles.Load(handle)
+	if !ok {
+		return syscall.EBADF
+	}
+	open := v.(*OpenFile)
+	if open.isDir {
+		return syscall.EBADF
+	}
+	return applyFileLocks(open.f, locks)
 }
 
 func (fs *PassthroughFS) Mknod(vfs.VfsNode, string, int, int) (*vfs.Attributes, error) {
@@ -403,18 +419,23 @@ func (fs *PassthroughFS) Rename(from vfs.VfsHandle, to string, flags int) error 
 		return fmt.Errorf("bad handle")
 	}
 	open := v.(*OpenFile)
+	target := path.Join(fs.rootPath, to)
 
 	// flags == 1 : replace if exists
 	if flags == 0 {
-		if _, err := os.Stat(to); err == nil {
+		if _, err := os.Stat(target); err == nil {
 			return fmt.Errorf("already exists")
 		}
 	}
 
 	stats.AddRename(open.path)
 
-	log.Debugf("rename: %s to %s", open.path, path.Join(fs.rootPath, to))
-	return os.Rename(open.path, path.Join(fs.rootPath, to))
+	log.Debugf("rename: %s to %s", open.path, target)
+	if err := os.Rename(open.path, target); err != nil {
+		return err
+	}
+	open.path = target
+	return nil
 }
 
 func (fs *PassthroughFS) Symlink(targetHandle vfs.VfsHandle, source string, flag int) (*vfs.Attributes, error) {
@@ -429,30 +450,35 @@ func (fs *PassthroughFS) Symlink(targetHandle vfs.VfsHandle, source string, flag
 	sourceDir := filepath.Dir(path.Clean(path.Join(targetDir, source)))
 
 	target := open.path
-	curDir, _ := os.Getwd()
-	if flag != 0 {
-		os.Chdir(targetDir)
-		target = path.Base(open.path)
-	}
 	log.Debugf("td %s sd %s, t %s s %s", targetDir, sourceDir, target, source)
 	if targetDir == sourceDir && target == source {
 		log.Errorf("can't create symlink for the same file")
 		return nil, fmt.Errorf("already exists")
 	}
-	os.Remove(open.path)
+	if err := open.f.Close(); err != nil {
+		log.Errorf("close symlink placeholder failed: %s, %v", open.path, err)
+		return nil, err
+	}
+	if err := os.Remove(open.path); err != nil && !os.IsNotExist(err) {
+		log.Errorf("remove symlink placeholder failed: %s, %v", open.path, err)
+		return nil, err
+	}
 
 	log.Debugf("symlink %s -> %s", source, target)
 	err := os.Symlink(source, target)
-	if flag != 0 {
-		os.Chdir(curDir)
-	}
-
 	if err != nil {
 		log.Errorf("symlink failed: %s -> %s, %v", source, target, err)
 		return nil, err
 	}
 
-	info, err := os.Lstat(open.path)
+	linkFile, err := openSymlink(open.path)
+	if err != nil {
+		log.Errorf("open symlink handle failed: %s, %v", open.path, err)
+		return nil, err
+	}
+	open.f = linkFile
+
+	info, err := open.f.Stat()
 	if err != nil {
 		return nil, err
 	}
@@ -566,11 +592,15 @@ func fileInfoToAttr(stat os.FileInfo) (*vfs.Attributes, error) {
 	}
 
 	a := vfs.Attributes{}
+	a.SetDeviceNumber(sysStat.Dev)
 	a.SetInodeNumber(sysStat.Ino)
+	a.SetLinkCount(sysStat.Nlink)
 	a.SetSizeBytes(uint64(stat.Size()))
 	a.SetDiskSizeBytes(uint64(sysStat.Blocks * 512))
 	a.SetUnixMode(uint32(stat.Mode()))
 	a.SetPermissions(vfs.NewPermissionsFromMode(uint32(stat.Mode().Perm())))
+	a.SetUID(sysStat.UID)
+	a.SetGID(sysStat.GID)
 	a.SetAccessTime(sysStat.Atime)
 	a.SetLastDataModificationTime(stat.ModTime())
 	a.SetBirthTime(sysStat.Btime)

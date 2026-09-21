@@ -232,7 +232,7 @@ func (a *Attributes) GetUnixMode() (uint32, bool) {
 
 // SetUnixMode sets the mode (lowest 12 bits of st_mode).
 func (a *Attributes) SetUnixMode(mode uint32) *Attributes {
-	a.unixMode = mode & 0777
+	a.unixMode = mode & 07777
 	a.fieldsPresent |= AttributesMaskUnixMode
 	return a
 }

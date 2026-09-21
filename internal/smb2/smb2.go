@@ -2,6 +2,8 @@ package smb2
 
 var zero [16]byte
 
+var SMB3PosixExtensionsTag = [16]byte{0x93, 0xad, 0x25, 0x50, 0x9c, 0xb4, 0x11, 0xe7, 0xb4, 0x23, 0x83, 0xde, 0x96, 0x8b, 0xcd, 0x7c}
+
 // ----------------------------------------------------------------------------
 // SMB2 FILEID
 //
@@ -158,6 +160,18 @@ func (c *CompressionContext) Encode(p []byte) {
 	}
 }
 
+type PosixContext struct{}
+
+func (c *PosixContext) Size() int {
+	return 8 + len(SMB3PosixExtensionsTag)
+}
+
+func (c *PosixContext) Encode(p []byte) {
+	le.PutUint16(p[:2], SMB3_POSIX_EXTENSIONS_AVAILABLE)
+	le.PutUint16(p[2:4], uint16(len(SMB3PosixExtensionsTag)))
+	copy(NegotiateContextDecoder(p).Data(), SMB3PosixExtensionsTag[:])
+}
+
 // From SMB311
 
 type NegotiateContextDecoder []byte
@@ -185,6 +199,13 @@ func (ctx NegotiateContextDecoder) DataLength() uint16 {
 func (ctx NegotiateContextDecoder) Data() []byte {
 	len := ctx.DataLength()
 	return ctx[8 : 8+len]
+}
+
+func (ctx NegotiateContextDecoder) IsSMB3Posix() bool {
+	data := ctx.Data()
+	return ctx.ContextType() == SMB3_POSIX_EXTENSIONS_AVAILABLE &&
+		len(data) == len(SMB3PosixExtensionsTag) &&
+		string(data) == string(SMB3PosixExtensionsTag[:])
 }
 
 func (ctx NegotiateContextDecoder) Next() int {

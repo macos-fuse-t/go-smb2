@@ -51,13 +51,15 @@ type Server struct {
 
 	xattrs bool
 
-	ignoreSetAttrErr bool
+	ignoreSetAttrErr          bool
+	enableSMB3PosixExtensions bool
 
 	activeConns map[*conn]struct{}
 
 	acceptSingleConn bool
 
-	lock sync.Mutex
+	lock     sync.Mutex
+	lockCond *sync.Cond
 }
 
 type OpLockState uint8
@@ -84,6 +86,7 @@ type Open struct {
 	currentEaIndex              uint32
 	currentQuotaIndex           uint32
 	lockCount                   int
+	byteRangeLocks              []smbByteRangeLock
 	pathName                    string
 	fileName                    string
 	resumeKey                   [24]byte
@@ -100,9 +103,12 @@ type Open struct {
 	notifyReq                   []byte
 	notifyReqAsyncId            uint64
 	queryDirectoryPending       []vfs.DirInfo
+	queryDirectorySingleName    string
+	queryDirectorySingleDone    bool
 	isEa                        bool
 	eaKey                       string
 	isSymlink                   bool
+	posixSemantics              bool
 	createGuid                  Guid
 	appInstanceId               Guid
 	isPersistent                bool
@@ -148,12 +154,13 @@ var (
 )
 
 type ServerConfig struct {
-	AllowGuest       bool
-	MaxIOReads       int
-	MaxIOWrites      int
-	Xatrrs           bool
-	IgnoreSetAttrErr bool
-	AcceptSingleConn bool
+	AllowGuest                bool
+	MaxIOReads                int
+	MaxIOWrites               int
+	Xatrrs                    bool
+	IgnoreSetAttrErr          bool
+	AcceptSingleConn          bool
+	EnableSMB3PosixExtensions bool
 }
 
 func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFileSystem) *Server {
@@ -163,19 +170,21 @@ func NewServer(cfg *ServerConfig, a Authenticator, shares map[string]vfs.VFSFile
 	}
 
 	srv := &Server{
-		authenticator:    a,
-		shares:           newShares,
-		origShares:       shares,
-		opens:            map[uint64]*Open{},
-		deletePending:    map[uint64]bool{},
-		allowGuest:       cfg.AllowGuest,
-		maxIOReads:       cfg.MaxIOReads,
-		maxIOWrites:      cfg.MaxIOWrites,
-		xattrs:           cfg.Xatrrs,
-		ignoreSetAttrErr: cfg.IgnoreSetAttrErr,
-		activeConns:      map[*conn]struct{}{},
-		acceptSingleConn: cfg.AcceptSingleConn,
+		authenticator:             a,
+		shares:                    newShares,
+		origShares:                shares,
+		opens:                     map[uint64]*Open{},
+		deletePending:             map[uint64]bool{},
+		allowGuest:                cfg.AllowGuest,
+		maxIOReads:                cfg.MaxIOReads,
+		maxIOWrites:               cfg.MaxIOWrites,
+		xattrs:                    cfg.Xatrrs,
+		ignoreSetAttrErr:          cfg.IgnoreSetAttrErr,
+		enableSMB3PosixExtensions: cfg.EnableSMB3PosixExtensions,
+		activeConns:               map[*conn]struct{}{},
+		acceptSingleConn:          cfg.AcceptSingleConn,
 	}
+	srv.lockCond = sync.NewCond(&srv.lock)
 	return srv
 }
 
@@ -769,6 +778,10 @@ func (n *ServerNegotiator) negotiate(conn *conn, pkt []byte) error {
 			default:
 				return &InvalidResponseError{"unknown cipher algorithm"}
 			}
+		case SMB3_POSIX_EXTENSIONS_AVAILABLE:
+			if conn.serverCtx.enableSMB3PosixExtensions && ctx.IsSMB3Posix() {
+				conn.posixExtensions = true
+			}
 		default:
 			// skip unsupported context
 		}
@@ -829,6 +842,9 @@ func (n *ServerNegotiator) makeResponse(conn *conn) (*NegotiateResponse, error) 
 			}
 
 			rsp.Contexts = append(rsp.Contexts, hc, cc)
+			if conn.posixExtensions {
+				rsp.Contexts = append(rsp.Contexts, &PosixContext{})
+			}
 		default:
 			return nil, &InternalError{"unsupported dialect specified"}
 		}
@@ -1101,6 +1117,7 @@ func (d *Server) getOpen(fileId uint64) *Open {
 func (d *Server) deleteOpen(fileId uint64) {
 	d.lock.Lock()
 	defer d.lock.Unlock()
+	defer d.broadcastLockWaiters()
 	if open, ok := d.opens[fileId]; ok {
 		delete(d.opens, fileId)
 		if open.isDurable {
@@ -1130,6 +1147,7 @@ func (d *Server) isDeletePending(node uint64) bool {
 func (d *Server) closeOpen(open *Open) bool {
 	d.lock.Lock()
 	defer d.lock.Unlock()
+	defer d.broadcastLockWaiters()
 
 	if open.deleteOnClose {
 		d.deletePending[open.durableFileId] = true
@@ -1152,6 +1170,14 @@ func (d *Server) closeOpen(open *Open) bool {
 
 	delete(d.deletePending, open.durableFileId)
 	return true
+}
+
+// broadcastLockWaiters tolerates Server values constructed directly by tests
+// and embedders instead of through NewServer.
+func (d *Server) broadcastLockWaiters() {
+	if d.lockCond != nil {
+		d.lockCond.Broadcast()
+	}
 }
 
 func (d *Server) BreakNode(node uint64) {

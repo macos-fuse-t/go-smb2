@@ -316,6 +316,10 @@ const (
 )
 
 const (
+	FilePosixInformation = 0x64
+)
+
+const (
 	FileFsVolumeInformation = 1 + iota
 	FileFsLabelInformation
 	FileFsSizeInformation

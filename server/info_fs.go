@@ -591,6 +591,32 @@ func (i FileFsVolumeInformationInfo) Encode(pkt []byte) {
 
 }
 
+type FileFsPosixInformationInfo struct {
+	OptimalTransferSize uint32
+	BlockSize           uint32
+	TotalBlocks         uint64
+	BlocksAvailable     uint64
+	UserBlocksAvailable uint64
+	TotalFileNodes      uint64
+	FreeFileNodes       uint64
+	FsIdentifier        uint64
+}
+
+func (i *FileFsPosixInformationInfo) Size() int {
+	return 56
+}
+
+func (i *FileFsPosixInformationInfo) Encode(pkt []byte) {
+	le.PutUint32(pkt[0:], i.OptimalTransferSize)
+	le.PutUint32(pkt[4:], i.BlockSize)
+	le.PutUint64(pkt[8:], i.TotalBlocks)
+	le.PutUint64(pkt[16:], i.BlocksAvailable)
+	le.PutUint64(pkt[24:], i.UserBlocksAvailable)
+	le.PutUint64(pkt[32:], i.TotalFileNodes)
+	le.PutUint64(pkt[40:], i.FreeFileNodes)
+	le.PutUint64(pkt[48:], i.FsIdentifier)
+}
+
 type NetworkInterfaceInfo struct {
 	Next       uint32
 	IfIndex    uint32
@@ -715,7 +741,7 @@ type FileBothDirectoryInformationInfo struct {
 }
 
 func (i FileBothDirectoryInformationInfo) Size() int {
-	return Align(82+int(utf16le.EncodedStringLen(i.FileName)), 8)
+	return Align(94+int(utf16le.EncodedStringLen(i.FileName)), 8)
 }
 
 func (i FileBothDirectoryInformationInfo) Encode(pkt []byte) {
@@ -730,7 +756,8 @@ func (i FileBothDirectoryInformationInfo) Encode(pkt []byte) {
 	le.PutUint32(pkt[56:], i.FileAttributes)
 	le.PutUint32(pkt[60:], uint32(utf16le.EncodedStringLen(i.FileName)))
 	le.PutUint32(pkt[64:], i.EaSize)
-	utf16le.EncodeString(pkt[82:], i.FileName)
+	pkt[68] = i.ShortNameLength
+	utf16le.EncodeString(pkt[94:], i.FileName)
 }
 
 type FileIdBothDirectoryInformationInfo struct {
@@ -874,6 +901,92 @@ type FileIdAllExtdBothDirectoryInformationInfo struct {
 	Pad             uint8
 	ShortName       [24]byte // The file's short name in 8.3 format
 	FileName        string
+}
+
+type FilePosixInformationInfo struct {
+	CreationTime   Filetime
+	LastAccessTime Filetime
+	LastWriteTime  Filetime
+	ChangeTime     Filetime
+	EndOfFile      uint64
+	AllocationSize uint64
+	FileAttributes uint32
+	Inode          uint64
+	Device         uint32
+	Reserved       uint32
+	NumberOfLinks  uint32
+	ReparseTag     uint32
+	PosixMode      uint32
+	OwnerSID       *SID
+	GroupSID       *SID
+	FileName       string
+}
+
+func (i FilePosixInformationInfo) Size() int {
+	return Align(80+i.OwnerSID.Size()+i.GroupSID.Size()+4+utf16le.EncodedStringLen(i.FileName), 8)
+}
+
+func (i FilePosixInformationInfo) Encode(pkt []byte) {
+	i.CreationTime.Encode(pkt[0:])
+	i.LastAccessTime.Encode(pkt[8:])
+	i.LastWriteTime.Encode(pkt[16:])
+	i.ChangeTime.Encode(pkt[24:])
+	le.PutUint64(pkt[32:], i.EndOfFile)
+	le.PutUint64(pkt[40:], i.AllocationSize)
+	le.PutUint32(pkt[48:], i.FileAttributes)
+	le.PutUint64(pkt[52:], i.Inode)
+	le.PutUint32(pkt[60:], i.Device)
+	le.PutUint32(pkt[64:], i.Reserved)
+	le.PutUint32(pkt[68:], i.NumberOfLinks)
+	le.PutUint32(pkt[72:], i.ReparseTag)
+	le.PutUint32(pkt[76:], i.PosixMode)
+	off := 80
+	i.OwnerSID.Encode(pkt[off:])
+	off += i.OwnerSID.Size()
+	i.GroupSID.Encode(pkt[off:])
+	off += i.GroupSID.Size()
+	nameLen := utf16le.EncodedStringLen(i.FileName)
+	le.PutUint32(pkt[off:], uint32(nameLen))
+	utf16le.EncodeString(pkt[off+4:], i.FileName)
+}
+
+type FilePosixDirectoryInformationInfo struct {
+	NextEntryOffset uint32
+	FileIndex       uint32
+	Info            FilePosixInformationInfo
+	FileName        string
+}
+
+func (i FilePosixDirectoryInformationInfo) Size() int {
+	return Align(8+i.Info.Size(), 8)
+}
+
+func (i FilePosixDirectoryInformationInfo) Encode(pkt []byte) {
+	le.PutUint32(pkt[:], i.NextEntryOffset)
+	le.PutUint32(pkt[4:], i.FileIndex)
+	i.Info.Encode(pkt[8:])
+}
+
+type PosixCreateContextResponse struct {
+	NumberOfLinks uint32
+	ReparseTag    uint32
+	PosixPerms    uint32
+	OwnerSID      *SID
+	GroupSID      *SID
+}
+
+func (r *PosixCreateContextResponse) Size() int {
+	return 12 + r.OwnerSID.Size() + r.GroupSID.Size()
+}
+
+func (r *PosixCreateContextResponse) Encode(pkt []byte) {
+	le.PutUint32(pkt[:], r.NumberOfLinks)
+	le.PutUint32(pkt[4:], r.ReparseTag)
+	le.PutUint32(pkt[8:], r.PosixPerms)
+	off := 12
+	r.OwnerSID.Encode(pkt[off:])
+	off += r.OwnerSID.Size()
+	r.GroupSID.Encode(pkt[off:])
 }
 
 // Size returns the size of the encoded structure.
